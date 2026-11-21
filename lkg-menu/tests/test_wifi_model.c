@@ -87,5 +87,45 @@ int test_wifi_model(void)
         TEST_ASSERT(wifi_model_is_saved(&model, &model.networks[1]) == 1);
         TEST_ASSERT(wifi_model_is_saved(&model, &model.networks[0]) == 0);
     }
+    {
+        WifiModel model = {0};
+        char output[] =
+            "bssid\tfrequency\tsignal\tflags\tssid\n"
+            "aa\t2412\t-30\t[WPA2-PSK]\tUnsavedStrong\n"
+            "bb\t2412\t-75\t[WPA2-PSK]\tCurrentWeak\n"
+            "cc\t5180\t-60\t[WPA2-PSK]\tSavedMid\n"
+            "dd\t5180\t-65\t[WPA2-PSK]\tSavedAlpha\n"
+            "ee\t5180\t-65\t[WPA2-PSK]\tSavedBeta\n";
+        snprintf(model.current_ssid, sizeof(model.current_ssid), "CurrentWeak");
+        model.current_ssid_length = strlen("CurrentWeak");
+        snprintf(model.saved_ssids[0], sizeof(model.saved_ssids[0]), "CurrentWeak");
+        model.saved_ssid_lengths[0] = strlen("CurrentWeak");
+        snprintf(model.saved_ssids[1], sizeof(model.saved_ssids[1]), "SavedBeta");
+        model.saved_ssid_lengths[1] = strlen("SavedBeta");
+        snprintf(model.saved_ssids[2], sizeof(model.saved_ssids[2]), "SavedAlpha");
+        model.saved_ssid_lengths[2] = strlen("SavedAlpha");
+        snprintf(model.saved_ssids[3], sizeof(model.saved_ssids[3]), "SavedMid");
+        model.saved_ssid_lengths[3] = strlen("SavedMid");
+        model.saved_network_count = 4;
+
+        wifi_model_parse_scan(&model, output);
+        TEST_ASSERT(model.network_count == 5);
+        TEST_STRING(model.networks[0].display_ssid, "CurrentWeak");
+        TEST_STRING(model.networks[1].display_ssid, "SavedMid");
+        TEST_STRING(model.networks[2].display_ssid, "SavedAlpha");
+        TEST_STRING(model.networks[3].display_ssid, "SavedBeta");
+        TEST_STRING(model.networks[4].display_ssid, "UnsavedStrong");
+
+        /* Simulate forgetting SavedMid and re-sorting after status refresh. */
+        model.saved_ssids[3][0] = '\0';
+        model.saved_ssid_lengths[3] = 0;
+        model.saved_network_count = 3;
+        wifi_model_sort_networks(&model);
+        TEST_STRING(model.networks[0].display_ssid, "CurrentWeak");
+        TEST_STRING(model.networks[1].display_ssid, "SavedAlpha");
+        TEST_STRING(model.networks[2].display_ssid, "SavedBeta");
+        TEST_STRING(model.networks[3].display_ssid, "UnsavedStrong");
+        TEST_STRING(model.networks[4].display_ssid, "SavedMid");
+    }
     return 0;
 }

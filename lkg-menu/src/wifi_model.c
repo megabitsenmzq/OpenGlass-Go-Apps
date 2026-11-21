@@ -93,13 +93,39 @@ static void make_display_ssid(WifiNetwork *network)
     network->display_ssid[network->ssid_length] = '\0';
 }
 
-static int network_compare(const void *left, const void *right)
+static int network_rank(const WifiModel *model, const WifiNetwork *network)
 {
-    const WifiNetwork *a = left;
-    const WifiNetwork *b = right;
+    if (wifi_model_is_current(model, network))
+        return 2;
+    if (wifi_model_is_saved(model, network))
+        return 1;
+    return 0;
+}
+
+static int network_compare(const WifiModel *model, const WifiNetwork *a,
+                           const WifiNetwork *b)
+{
+    int rank_a = network_rank(model, a);
+    int rank_b = network_rank(model, b);
+    if (rank_a != rank_b)
+        return rank_a < rank_b ? 1 : -1;
     if (a->signal != b->signal)
         return a->signal < b->signal ? 1 : -1;
     return strcmp(a->display_ssid, b->display_ssid);
+}
+
+void wifi_model_sort_networks(WifiModel *model)
+{
+    int i;
+    for (i = 1; i < model->network_count; ++i) {
+        WifiNetwork key = model->networks[i];
+        int j = i - 1;
+        while (j >= 0 && network_compare(model, &model->networks[j], &key) > 0) {
+            model->networks[j + 1] = model->networks[j];
+            --j;
+        }
+        model->networks[j + 1] = key;
+    }
 }
 
 void wifi_model_parse_scan(WifiModel *model, char *output)
@@ -153,8 +179,7 @@ void wifi_model_parse_scan(WifiModel *model, char *output)
             model->networks[model->network_count++] = network;
         }
     }
-    qsort(model->networks, (size_t)model->network_count,
-          sizeof(model->networks[0]), network_compare);
+    wifi_model_sort_networks(model);
 }
 
 int wifi_model_is_saved(const WifiModel *model, const WifiNetwork *network)

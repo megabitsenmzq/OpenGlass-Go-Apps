@@ -72,6 +72,32 @@ static void update_scroll(WifiMenu *menu)
         menu->scroll = wifi_view_networks_page_start(menu->selected);
 }
 
+static void sort_networks_preserving_selection(WifiMenu *menu)
+{
+    char selected_ssid[33];
+    size_t selected_length = 0;
+    int track_selection = menu->page == WIFI_PAGE_NETWORKS &&
+                          menu->selected >= 2 &&
+                          menu->selected - 2 < menu->model.network_count;
+    if (track_selection) {
+        const WifiNetwork *current = &menu->model.networks[menu->selected - 2];
+        selected_length = current->ssid_length;
+        memcpy(selected_ssid, current->ssid, selected_length);
+    }
+    wifi_model_sort_networks(&menu->model);
+    if (track_selection) {
+        int i;
+        for (i = 0; i < menu->model.network_count; ++i) {
+            if (menu->model.networks[i].ssid_length == selected_length &&
+                memcmp(menu->model.networks[i].ssid, selected_ssid, selected_length) == 0) {
+                menu->selected = i + 2;
+                update_scroll(menu);
+                break;
+            }
+        }
+    }
+}
+
 static int handle_network_command(WifiMenu *menu, const char *command)
 {
     int count = menu->model.network_count + 2;
@@ -302,9 +328,11 @@ int wifi_run(Display *display, Font *font, const DepthEffect *depth,
         }
         if (wifi_process_poll(&menu.update)) {
             size_t offset = offsetof(WifiModel, current_ssid);
-            if (menu.update.length == sizeof(WifiModel))
+            if (menu.update.length == sizeof(WifiModel)) {
                 memcpy((char *)&menu.model + offset, menu.update.output + offset,
                        sizeof(WifiModel) - offset);
+                sort_networks_preserving_selection(&menu);
+            }
             changed = PASSWORD_REDRAW_FULL;
         }
         if (wifi_process_poll(&menu.scan)) {

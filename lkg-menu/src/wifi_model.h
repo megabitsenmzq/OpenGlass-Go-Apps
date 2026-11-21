@@ -40,6 +40,7 @@ typedef struct {
 size_t wifi_model_decode_ssid(const char *input, char output[33]);
 int wifi_model_hex_value(char character);
 void wifi_model_parse_scan(WifiModel *model, char *output);
+void wifi_model_sort_networks(WifiModel *model);
 int wifi_model_is_saved(const WifiModel *model, const WifiNetwork *network);
 int wifi_model_is_current(const WifiModel *model, const WifiNetwork *network);
 uint64_t wifi_networks_content_key(const WifiNetwork *networks, int network_count,
