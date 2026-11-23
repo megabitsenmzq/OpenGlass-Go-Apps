@@ -15,6 +15,8 @@ int main(void)
     TEST_RUN(test_menu_model);
     TEST_RUN(test_media_scan);
     TEST_RUN(test_cache_key);
+    TEST_RUN(test_apps_scan);
+    TEST_RUN(test_app_protocol);
     if (tests_failed) {
         fprintf(stderr, "%d/%d tests failed\n", tests_failed, tests_run);
         return 1;

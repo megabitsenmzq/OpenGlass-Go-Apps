@@ -218,9 +218,13 @@ void gallery_reveal(Gallery *gallery, const char *media_path)
 int gallery_resume_gpu(Display *display, Gallery *gallery)
 {
     int stereo = gallery->depth->stereo;
+    float front = gallery->depth->front_disparity;
+    float back = gallery->depth->back_disparity;
     if (depth_effect_open(gallery->depth, display, CALIBRATION_PATH) != 0)
         return -1;
     gallery->depth->stereo = stereo;
+    gallery->depth->front_disparity = front;
+    gallery->depth->back_disparity = back;
     printf("Menu GPU resources resumed after playback\n");
     return 0;
 }
@@ -345,8 +349,10 @@ int gallery_play_media(Display *display, Font *font, Gallery *gallery,
     if (gallery_resume_gpu(display, gallery) == 0)
         depth_suspended = 0;
     if (layers_suspended && gallery->cache.layers &&
-        depth_layer_create(display, &gallery->cache.layers[0], 70.0f) == 0 &&
-        depth_layer_create(display, &gallery->cache.layers[1], -56.0f) == 0) {
+        depth_layer_create(display, &gallery->cache.layers[0],
+                           gallery->depth->front_disparity) == 0 &&
+        depth_layer_create(display, &gallery->cache.layers[1],
+                           gallery->depth->back_disparity) == 0) {
         layers_suspended = 0;
     } else if (layers_suspended && gallery->cache.layers) {
         depth_layer_destroy(&gallery->cache.layers[0]);
@@ -381,8 +387,10 @@ cleanup:
             depth_suspended = 0;
     }
     if (layers_suspended && gallery->cache.layers) {
-        if (depth_layer_create(display, &gallery->cache.layers[0], 70.0f) == 0 &&
-            depth_layer_create(display, &gallery->cache.layers[1], -56.0f) == 0) {
+        if (depth_layer_create(display, &gallery->cache.layers[0],
+                               gallery->depth->front_disparity) == 0 &&
+            depth_layer_create(display, &gallery->cache.layers[1],
+                               gallery->depth->back_disparity) == 0) {
             layers_suspended = 0;
         } else {
             depth_layer_destroy(&gallery->cache.layers[0]);

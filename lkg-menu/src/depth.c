@@ -1,5 +1,7 @@
 #include "depth.h"
 #include "depth_gpu.h"
+#include "lkg_app_protocol.h"
+#include "menu_model.h"
 
 #include <errno.h>
 #include <math.h>
@@ -82,6 +84,8 @@ int depth_effect_open(DepthEffect *effect, Display *display, const char *calibra
     effect->screen_h = 2560;
     effect->dpi = 491;
     effect->inv_view = 1;
+    effect->front_disparity = LKG_DEPTH_SUBTLE_POP_OUT;
+    effect->back_disparity = LKG_DEPTH_SUBTLE_RECESSED;
     json = read_text_file(calibration_path);
     if (!json)
         return -1;
@@ -119,6 +123,29 @@ int depth_effect_open(DepthEffect *effect, Display *display, const char *calibra
 fail:
     free(json);
     return -1;
+}
+
+void depth_effect_apply_mode(DepthEffect *effect, DepthLayer layers[2], int menu_3d)
+{
+    if (!effect)
+        return;
+    if (menu_3d == MENU_3D_OFF) {
+        effect->stereo = 0;
+        effect->front_disparity = LKG_DEPTH_SCREEN;
+        effect->back_disparity = LKG_DEPTH_SCREEN;
+    } else if (menu_3d == MENU_3D_DEEP) {
+        effect->stereo = 1;
+        effect->front_disparity = LKG_DEPTH_DEEP_POP_OUT;
+        effect->back_disparity = LKG_DEPTH_DEEP_RECESSED;
+    } else {
+        effect->stereo = 1;
+        effect->front_disparity = LKG_DEPTH_SUBTLE_POP_OUT;
+        effect->back_disparity = LKG_DEPTH_SUBTLE_RECESSED;
+    }
+    if (layers) {
+        layers[0].disparity = effect->front_disparity;
+        layers[1].disparity = effect->back_disparity;
+    }
 }
 
 void depth_effect_close(DepthEffect *effect)

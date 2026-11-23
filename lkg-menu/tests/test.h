@@ -29,5 +29,7 @@ int test_password_keyboard(void);
 int test_menu_model(void);
 int test_media_scan(void);
 int test_cache_key(void);
+int test_apps_scan(void);
+int test_app_protocol(void);
 
 #endif

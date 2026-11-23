@@ -41,15 +41,15 @@ static void draw_menu_item(Display *display, Font *font, const DepthEffect *dept
 }
 
 void menu_view_draw_page(Display *display, Font *font, const DepthEffect *depth,
-                         DepthLayer layers[2], int page, int selected,
-                         const SystemInfo *info)
+                         DepthLayer layers[2], int page, int has_apps,
+                         int selected, const SystemInfo *info)
 {
     const char **items;
     int count;
     int row_height = display->mode.vdisplay / 17;
     int start_y;
     int i;
-    menu_items(page, &items, &count);
+    menu_items(page, has_apps, &items, &count);
     start_y = ((int)display->mode.vdisplay - row_height * count) / 2;
     memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
     memset(layers[1].buffer.pixels, 0, layers[1].buffer.size);
@@ -59,15 +59,15 @@ void menu_view_draw_page(Display *display, Font *font, const DepthEffect *depth,
 }
 
 void menu_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
-                        DepthLayer layers[2], int page, int row, int selected,
-                        const SystemInfo *info)
+                        DepthLayer layers[2], int page, int has_apps, int row,
+                        int selected, const SystemInfo *info)
 {
     const char **items;
     int count;
     int row_height = display->mode.vdisplay / 17;
     int start_y;
     int y;
-    menu_items(page, &items, &count);
+    menu_items(page, has_apps, &items, &count);
     start_y = ((int)display->mode.vdisplay - row_height * count) / 2;
     y = start_y + row * row_height;
     draw_rect(display, &layers[0].buffer, 0, y, display->mode.hdisplay, row_height, 0);

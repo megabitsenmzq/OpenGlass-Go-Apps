@@ -41,7 +41,6 @@ typedef struct {
     GLint tilt;
     GLint center;
     GLint fringe;
-    GLint views;
     GLint inv_view;
     GLint flip_subp;
     GLint interlace;
@@ -110,40 +109,48 @@ static const char *fragment_source =
     "uniform float u_tilt;\n"
     "uniform float u_center;\n"
     "uniform float u_fringe;\n"
-    "uniform float u_views;\n"
     "uniform int u_inv_view;\n"
     "uniform int u_flip_subp;\n"
     "uniform int u_interlace;\n"
     "uniform int u_stereo;\n"
-    "float rounded(float value) {\n"
-    "  return sign(value) * floor(abs(value) + 0.5);\n"
-    "}\n"
     "vec3 base_color(vec2 source) {\n"
     "  if (source.y >= u_bar_range.x && source.y < u_bar_range.y)\n"
     "    return vec3(232.0 / 255.0);\n"
     "  return vec3(16.0 / 255.0, 16.0 / 255.0, 20.0 / 255.0);\n"
     "}\n"
-    "vec4 layer_pixel(sampler2D image, float disparity, float view, vec2 source) {\n"
-    "  float shift = rounded(disparity * (2.0 * view / (u_views - 1.0) - 1.0));\n"
-    "  vec2 pixel = source + vec2(shift, 0.0);\n"
-    "  vec2 local = pixel - u_layer_origin;\n"
-    "  if (local.x < 0.0 || local.x >= u_layer_size.x || local.y < 0.0 || local.y >= u_layer_size.y) return vec4(0.0);\n"
-    "  return texture2D(image, (local + 0.5) / u_layer_size);\n"
+    "vec4 sample_texel_premul(sampler2D image, float x, float y) {\n"
+    "  if (x < 0.0 || x >= u_layer_size.x || y < 0.0 || y >= u_layer_size.y)\n"
+    "    return vec4(0.0);\n"
+    "  vec4 texel = texture2D(image, (vec2(x, y) + 0.5) / u_layer_size);\n"
+    "  return vec4(texel.rgb * texel.a, texel.a);\n"
     "}\n"
-    "vec3 composite_view(float view, vec2 source, vec3 background) {\n"
+    "vec4 layer_pixel(sampler2D image, float disparity, float angle, vec2 source) {\n"
+    "  float local_y = source.y - u_layer_origin.y;\n"
+    "  if (local_y < 0.0 || local_y >= u_layer_size.y) return vec4(0.0);\n"
+    "  float local_x = source.x - u_layer_origin.x;\n"
+    "  if (disparity == 0.0) return sample_texel_premul(image, local_x, local_y);\n"
+    "  local_x += disparity * angle;\n"
+    "  float x0 = floor(local_x);\n"
+    "  float frac = local_x - x0;\n"
+    "  vec4 left = sample_texel_premul(image, x0, local_y);\n"
+    "  vec4 right = sample_texel_premul(image, x0 + 1.0, local_y);\n"
+    "  return mix(left, right, frac);\n"
+    "}\n"
+    "vec3 composite_angle(float angle, vec2 source, vec3 background) {\n"
     "  vec3 color = background;\n"
-    "  vec4 foreground = layer_pixel(u_layer1, u_disparity.y, view, source);\n"
-    "  color = foreground.rgb * foreground.a + color * (1.0 - foreground.a);\n"
-    "  foreground = layer_pixel(u_layer0, u_disparity.x, view, source);\n"
-    "  color = foreground.rgb * foreground.a + color * (1.0 - foreground.a);\n"
+    "  vec4 foreground = layer_pixel(u_layer1, u_disparity.y, angle, source);\n"
+    "  color = foreground.rgb + color * (1.0 - foreground.a);\n"
+    "  foreground = layer_pixel(u_layer0, u_disparity.x, angle, source);\n"
+    "  color = foreground.rgb + color * (1.0 - foreground.a);\n"
     "  return color;\n"
     "}\n"
     "vec3 flat_color(vec2 source, vec3 background) {\n"
+    "  vec2 local = source - u_layer_origin;\n"
     "  vec3 color = background;\n"
-    "  vec4 foreground = layer_pixel(u_layer1, 0.0, 0.0, source);\n"
-    "  color = foreground.rgb * foreground.a + color * (1.0 - foreground.a);\n"
-    "  foreground = layer_pixel(u_layer0, 0.0, 0.0, source);\n"
-    "  color = foreground.rgb * foreground.a + color * (1.0 - foreground.a);\n"
+    "  vec4 foreground = sample_texel_premul(u_layer1, local.x, local.y);\n"
+    "  color = foreground.rgb + color * (1.0 - foreground.a);\n"
+    "  foreground = sample_texel_premul(u_layer0, local.x, local.y);\n"
+    "  color = foreground.rgb + color * (1.0 - foreground.a);\n"
     "  return color;\n"
     "}\n"
     "void main() {\n"
@@ -159,15 +166,11 @@ static const char *fragment_source =
     "  vec3 color = background;\n"
     "  for (int channel = 0; channel < 3; ++channel) {\n"
     "    int subpixel = u_flip_subp != 0 ? 2 - channel : channel;\n"
-    "    float phase = (pixel.x + float(subpixel) / (3.0 * u_resolution.x) + pixel.y * u_tilt) * u_pitch - u_center + u_fringe + 0.5 / u_views;\n"
+    "    float phase = (pixel.x + float(subpixel) / (3.0 * u_resolution.x) + pixel.y * u_tilt) * u_pitch - u_center + u_fringe;\n"
     "    phase = u_inv_view != 0 ? 1.0 - fract(phase) : fract(phase);\n"
-    "    phase = clamp(phase, 0.00001, 0.99999);\n"
-    "    float view = phase * u_views;\n"
-    "    float lower = min(floor(view), u_views - 1.0);\n"
-    "    float upper = mod(lower + 1.0, u_views);\n"
-    "    vec3 a = composite_view(lower, source, background);\n"
-    "    vec3 b = composite_view(upper, source, background);\n"
-    "    color[channel] = mix(a[channel], b[channel], view - floor(view));\n"
+    "    float angle = 2.0 * phase - 1.0;\n"
+    "    vec3 sample_color = composite_angle(angle, source, background);\n"
+    "    color[channel] = sample_color[channel];\n"
     "  }\n"
     "  gl_FragColor = vec4(color, 1.0);\n"
     "}\n";
@@ -502,7 +505,6 @@ static void cache_uniform_locations(DepthGpu *gpu)
     uniforms->tilt = glGetUniformLocation(gpu->program, "u_tilt");
     uniforms->center = glGetUniformLocation(gpu->program, "u_center");
     uniforms->fringe = glGetUniformLocation(gpu->program, "u_fringe");
-    uniforms->views = glGetUniformLocation(gpu->program, "u_views");
     uniforms->inv_view = glGetUniformLocation(gpu->program, "u_inv_view");
     uniforms->flip_subp = glGetUniformLocation(gpu->program, "u_flip_subp");
     uniforms->interlace = glGetUniformLocation(gpu->program, "u_interlace");
@@ -530,7 +532,6 @@ static void set_uniforms(DepthGpu *gpu, Display *display, const DepthEffect *eff
     glUniform1f(uniforms->tilt, tilt);
     glUniform1f(uniforms->center, effect->center);
     glUniform1f(uniforms->fringe, effect->fringe);
-    glUniform1f(uniforms->views, 48.0f);
     glUniform1i(uniforms->inv_view, effect->inv_view);
     glUniform1i(uniforms->flip_subp, effect->flip_subp);
 }

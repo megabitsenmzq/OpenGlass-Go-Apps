@@ -143,7 +143,7 @@ UsbKeyEvent usb_keyboard_translate(UsbKeyboard *keyboard, const struct input_eve
         [KEY_KPMINUS] = '-', [KEY_KPPLUS] = '+', [KEY_KPSLASH] = '/',
         [KEY_KPASTERISK] = '*'
     };
-    UsbKeyEvent result = { USB_KEY_NONE, 0 };
+    UsbKeyEvent result = { USB_KEY_NONE, 0, 0 };
     int code;
     if (event->type != EV_KEY)
         return result;
@@ -162,34 +162,42 @@ UsbKeyEvent usb_keyboard_translate(UsbKeyboard *keyboard, const struct input_eve
     }
     if (event->value != 1)
         return result;
-    if (code == KEY_LEFT || code == KEY_UP)
+    if (code == KEY_LEFT || code == KEY_UP) {
         result.type = USB_KEY_PREV;
-    else if (code == KEY_RIGHT || code == KEY_DOWN)
+        result.code = code;
+    } else if (code == KEY_RIGHT || code == KEY_DOWN) {
         result.type = USB_KEY_NEXT;
-    else if (code == KEY_BACKSPACE)
+        result.code = code;
+    } else if (code == KEY_BACKSPACE) {
         result.type = USB_KEY_BACKSPACE;
-    else if (code == KEY_ENTER || code == KEY_KPENTER)
+        result.code = code;
+    } else if (code == KEY_ENTER || code == KEY_KPENTER) {
         result.type = USB_KEY_ENTER;
-    else if (code == KEY_ESC)
+        result.code = code;
+    } else if (code == KEY_ESC) {
         result.type = USB_KEY_ESCAPE;
-    else if (code >= 0 && code <= KEY_MAX && letters[code]) {
+        result.code = code;
+    } else if (code >= 0 && code <= KEY_MAX && letters[code]) {
         result.type = USB_KEY_CHARACTER;
         result.character = letters[code];
         if (keyboard->caps_lock ^ (keyboard->shift > 0))
             result.character = (char)(result.character - 'a' + 'A');
+        result.code = code;
     } else if (keyboard->shift > 0 && shifted_character(code)) {
         result.type = USB_KEY_CHARACTER;
         result.character = shifted_character(code);
+        result.code = code;
     } else if (code >= 0 && code <= KEY_MAX && characters[code]) {
         result.type = USB_KEY_CHARACTER;
         result.character = characters[code];
+        result.code = code;
     }
     return result;
 }
 
 UsbKeyEvent usb_keyboard_next(UsbKeyboard *keyboard)
 {
-    UsbKeyEvent result = { USB_KEY_NONE, 0 };
+    UsbKeyEvent result = { USB_KEY_NONE, 0, 0 };
     if (keyboard->fd < 0) {
         long long now = monotonic_ms();
         if (now < keyboard->next_scan_ms)
@@ -215,6 +223,7 @@ UsbKeyEvent usb_keyboard_next(UsbKeyboard *keyboard)
         keyboard->next_scan_ms = 0;
         result.type = USB_KEY_NONE;
         result.character = 0;
+        result.code = 0;
         return result;
     }
 }

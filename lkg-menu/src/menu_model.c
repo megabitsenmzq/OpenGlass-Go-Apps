@@ -27,6 +27,10 @@ static const char *main_items[] = {
     "Gallery", "File Manager", "Desktop (Sway)", "Settings", "Return to TTY", "Power Off"
 };
 
+static const char *main_items_with_apps[] = {
+    "Apps", "Gallery", "File Manager", "Desktop (Sway)", "Settings", "Return to TTY", "Power Off"
+};
+
 static const char *file_manager_items[] = { "Back" };
 
 static const char *settings_items[] = {
@@ -41,6 +45,7 @@ static const char *info_items[] = {
 
 static const char *clear_cache_items[] = { "Back", "Confirm" };
 static const char *direction_items[] = { "Back", "Original", "Reversed" };
+static const char *menu_3d_items[] = { "Back", "Off", "Subtle", "Deep" };
 static const char *auto_play_items[] = { "Back", "Off", "On" };
 static const char *volume_items[] = {
     "Back", "Mute", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"
@@ -57,6 +62,16 @@ static const int duration_values[] = {
 };
 
 static const MenuItemRule main_rules[] = {
+    RULE(ACTION_GALLERY, -1, -1),
+    RULE(ACTION_NONE, PAGE_FILE_MANAGER, 0),
+    RULE(ACTION_SWAY, -1, -1),
+    RULE(ACTION_NONE, PAGE_SETTINGS, 0),
+    RULE(ACTION_TTY, -1, -1),
+    RULE(ACTION_POWER_OFF, -1, -1)
+};
+
+static const MenuItemRule main_rules_with_apps[] = {
+    RULE(ACTION_APPS, -1, -1),
     RULE(ACTION_GALLERY, -1, -1),
     RULE(ACTION_NONE, PAGE_FILE_MANAGER, 0),
     RULE(ACTION_SWAY, -1, -1),
@@ -123,6 +138,7 @@ static const MenuItemRule volume_rules[] = {
 static const MenuItemRule menu_3d_rules[] = {
     RULE(ACTION_NONE, PAGE_SETTINGS, 5),
     RULE(ACTION_NONE, PAGE_SETTINGS, 5),
+    RULE(ACTION_NONE, PAGE_SETTINGS, 5),
     RULE(ACTION_NONE, PAGE_SETTINGS, 5)
 };
 
@@ -155,7 +171,7 @@ static const MenuPageDef pages[] = {
       PAGE_SETTINGS, 3 },
     { PAGE_BUTTON_DIRECTION, direction_items, ARRAY_SIZE(direction_items), direction_rules,
       PAGE_SETTINGS, 4 },
-    { PAGE_3D_MENU, auto_play_items, ARRAY_SIZE(auto_play_items), menu_3d_rules,
+    { PAGE_3D_MENU, menu_3d_items, ARRAY_SIZE(menu_3d_items), menu_3d_rules,
       PAGE_SETTINGS, 5 },
     { PAGE_AUTO_PLAY, auto_play_items, ARRAY_SIZE(auto_play_items), auto_play_rules,
       PAGE_SETTINGS, 6 },
@@ -175,19 +191,39 @@ static const MenuPageDef *page_definition(int page)
     return &pages[sizeof(pages) / sizeof(pages[0]) - 1];
 }
 
-void menu_items(int page, const char ***items, int *count)
+static void effective_page_info(int page, int has_apps, const char ***items,
+                                int *count, const MenuItemRule **rules)
 {
     const MenuPageDef *definition = page_definition(page);
-    *items = definition->items;
-    *count = definition->count;
+    if (page == PAGE_MAIN && has_apps) {
+        if (items)
+            *items = main_items_with_apps;
+        if (count)
+            *count = ARRAY_SIZE(main_items_with_apps);
+        if (rules)
+            *rules = main_rules_with_apps;
+        return;
+    }
+    if (items)
+        *items = definition->items;
+    if (count)
+        *count = definition->count;
+    if (rules)
+        *rules = definition->rules;
 }
 
-void menu_return_to_parent(int *page, int *selected)
+void menu_items(int page, int has_apps, const char ***items, int *count)
+{
+    effective_page_info(page, has_apps, items, count, NULL);
+}
+
+void menu_return_to_parent(int *page, int *selected, int has_apps)
 {
     const MenuPageDef *definition = page_definition(*page);
     if (definition->parent >= 0) {
         *page = definition->parent;
-        *selected = definition->return_focus;
+        *selected = definition->return_focus +
+                    (definition->parent == PAGE_MAIN && has_apps ? 1 : 0);
     }
 }
 
@@ -219,19 +255,22 @@ static void save(MenuState *state, MenuSaveSettings save_settings, void *save_co
 static void select_settings_page(MenuState *state, const MenuItemRule *rule,
                                  MenuSaveSettings save_settings, void *save_context)
 {
+    int target_selected = rule->target_selected +
+                          (rule->target_page == PAGE_MAIN && state->has_apps ? 1 : 0);
     if (state->page == PAGE_SETTINGS) {
         if (state->selected == 3)
             state->selected = menu_duration_index(state->slideshow_duration) + 1;
         else if (state->selected == 4)
             state->selected = state->button_reversed ? 2 : 1;
         else if (state->selected == 5)
-            state->selected = state->menu_3d ? 2 : 1;
+            state->selected = state->menu_3d == MENU_3D_DEEP ? 3 :
+                              state->menu_3d == MENU_3D_SUBTLE ? 2 : 1;
         else if (state->selected == 6)
             state->selected = state->auto_play ? 2 : 1;
         else if (state->selected == 8)
             state->selected = menu_volume_index(state->volume) + 1;
         else
-            state->selected = rule->target_selected;
+            state->selected = target_selected;
     } else {
         if (state->selected > 0) {
             if (state->page == PAGE_SLIDESHOW_DURATION)
@@ -239,13 +278,14 @@ static void select_settings_page(MenuState *state, const MenuItemRule *rule,
             else if (state->page == PAGE_BUTTON_DIRECTION)
                 state->button_reversed = state->selected == 2;
             else if (state->page == PAGE_3D_MENU)
-                state->menu_3d = state->selected == 2;
+                state->menu_3d = state->selected == 3 ? MENU_3D_DEEP :
+                                 state->selected == 2 ? MENU_3D_SUBTLE : MENU_3D_OFF;
             else if (state->page == PAGE_AUTO_PLAY)
                 state->auto_play = state->selected == 2;
             if (state->page != PAGE_CLEAR_CACHE && state->page != PAGE_VOLUME)
                 save(state, save_settings, save_context);
         }
-        state->selected = rule->target_selected;
+        state->selected = target_selected;
     }
 }
 
@@ -254,6 +294,9 @@ MenuAction menu_handle_message(MenuState *state, const char *message, int *chang
 {
     char command[16];
     const MenuPageDef *definition = page_definition(state->page);
+    int item_count = 0;
+    const MenuItemRule *rules = NULL;
+    effective_page_info(state->page, state->has_apps, NULL, &item_count, &rules);
     if (sscanf(message, "{\"cmd\":\"%15[^\"]\"", command) != 1)
         return ACTION_NONE;
     if (strcmp(command, "SHUT") == 0)
@@ -267,7 +310,7 @@ MenuAction menu_handle_message(MenuState *state, const char *message, int *chang
             strcpy(command, "PREV");
     }
     if (strcmp(command, "PREV") == 0) {
-        if (state->selected + 1 < definition->count) {
+        if (state->selected + 1 < item_count) {
             ++state->selected;
             *changed = 1;
         } else if (state->page != PAGE_VOLUME) {
@@ -279,11 +322,11 @@ MenuAction menu_handle_message(MenuState *state, const char *message, int *chang
             --state->selected;
             *changed = 1;
         } else if (state->page != PAGE_VOLUME) {
-            state->selected = definition->count - 1;
+            state->selected = item_count - 1;
             *changed = 1;
         }
     } else if (strcmp(command, "PLPA") == 0) {
-        const MenuItemRule *rule = &definition->rules[state->selected];
+        const MenuItemRule *rule = &rules[state->selected];
         if (rule->action != ACTION_NONE)
             return rule->action;
         if (rule->target_page >= 0) {
@@ -294,7 +337,7 @@ MenuAction menu_handle_message(MenuState *state, const char *message, int *chang
             *changed = 1;
         }
     } else if (strcmp(command, "LOOP") == 0 && definition->parent >= 0) {
-        menu_return_to_parent(&state->page, &state->selected);
+        menu_return_to_parent(&state->page, &state->selected, state->has_apps);
         *changed = 1;
     } else {
         return ACTION_NONE;

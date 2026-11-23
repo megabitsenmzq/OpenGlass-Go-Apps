@@ -18,10 +18,10 @@ typedef struct {
 } SystemInfo;
 
 void menu_view_draw_page(Display *display, Font *font, const DepthEffect *depth,
-                         DepthLayer layers[2], int page, int selected,
-                         const SystemInfo *info);
+                         DepthLayer layers[2], int page, int has_apps,
+                         int selected, const SystemInfo *info);
 void menu_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
-                        DepthLayer layers[2], int page, int row, int selected,
-                        const SystemInfo *info);
+                        DepthLayer layers[2], int page, int has_apps, int row,
+                        int selected, const SystemInfo *info);
 
 #endif

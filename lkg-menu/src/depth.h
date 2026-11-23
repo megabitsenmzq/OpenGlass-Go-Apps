@@ -19,6 +19,8 @@ typedef struct {
     int flip_image_y;
     int flip_subp;
     int stereo;
+    float front_disparity;
+    float back_disparity;
     void *gpu;
 } DepthEffect;
 
@@ -32,6 +34,7 @@ int depth_cache_needs_full(const DepthEffect *effect, const DepthCacheState *sta
 void depth_cache_commit(const DepthEffect *effect, DepthCacheState *state,
                         uint64_t content_key);
 int depth_effect_open(DepthEffect *effect, Display *display, const char *calibration_path);
+void depth_effect_apply_mode(DepthEffect *effect, DepthLayer layers[2], int menu_3d);
 void depth_effect_close(DepthEffect *effect);
 int depth_layer_create(Display *display, DepthLayer *layer, float disparity);
 void depth_layer_destroy(DepthLayer *layer);

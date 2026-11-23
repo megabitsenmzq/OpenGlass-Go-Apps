@@ -30,6 +30,8 @@
 #include <unistd.h>
 #include <xf86drm.h>
 #include <xf86drmMode.h>
+#include "apps_host.h"
+#include "apps_scan.h"
 #include "gallery.h"
 #include "file_manager_view.h"
 #include "menu_view.h"
@@ -181,7 +183,7 @@ static void load_settings(int *slideshow_duration, int *button_reversed,
     *slideshow_duration = 5;
     *button_reversed = 1;
     *auto_play = 0;
-    *menu_3d = 1;
+    *menu_3d = MENU_3D_SUBTLE;
     if (!file)
         file = fopen(LEGACY_SETTINGS_PATH, "r");
     if (!file)
@@ -200,9 +202,12 @@ static void load_settings(int *slideshow_duration, int *button_reversed,
         else if (strncmp(line, "auto_play=on", 12) == 0)
             *auto_play = 1;
         else if (strncmp(line, "menu_3d=off", 11) == 0)
-            *menu_3d = 0;
-        else if (strncmp(line, "menu_3d=on", 10) == 0)
-            *menu_3d = 1;
+            *menu_3d = MENU_3D_OFF;
+        else if (strncmp(line, "menu_3d=subtle", 14) == 0)
+            *menu_3d = MENU_3D_SUBTLE;
+        else if (strncmp(line, "menu_3d=deep", 12) == 0 ||
+                 strncmp(line, "menu_3d=on", 10) == 0)
+            *menu_3d = MENU_3D_DEEP;
     }
     fclose(file);
 }
@@ -211,6 +216,8 @@ static int save_settings_to(const char *path, int seconds, int button_reversed,
                             int auto_play, int menu_3d)
 {
     char temporary_path[PATH_MAX];
+    const char *menu_3d_value = menu_3d == MENU_3D_DEEP ? "deep" :
+                                menu_3d == MENU_3D_SUBTLE ? "subtle" : "off";
     FILE *file;
     int failed;
     if (snprintf(temporary_path, sizeof(temporary_path), "%s.tmp", path) >=
@@ -221,7 +228,7 @@ static int save_settings_to(const char *path, int seconds, int button_reversed,
         return -1;
     failed = fprintf(file, "slideshow_duration=%d\nbutton_orientation=%s\nauto_play=%s\nmenu_3d=%s\n",
                      seconds, button_reversed ? "reversed" : "original",
-                     auto_play ? "on" : "off", menu_3d ? "on" : "off") < 0;
+                     auto_play ? "on" : "off", menu_3d_value) < 0;
     if (fclose(file) != 0)
         failed = 1;
     if (failed) {
@@ -453,10 +460,10 @@ static void draw_file_manager(Display *display, Font *font, const DepthEffect *d
     file_manager_view_draw(display, font, depth, layers, info.ip);
 }
 
-static int draw_menu(Display *display, Font *font, int page, int selected,
-                     int previous_selected, SystemInfo *info,
-                     const DepthEffect *depth, DepthCacheState *cache_state,
-                     DepthLayer layers[2])
+static int draw_menu(Display *display, Font *font, int page, int has_apps,
+                     int menu_3d, int selected, int previous_selected,
+                     SystemInfo *info, const DepthEffect *depth,
+                     DepthCacheState *cache_state, DepthLayer layers[2])
 {
     const char **items;
     int count;
@@ -466,7 +473,10 @@ static int draw_menu(Display *display, Font *font, int page, int selected,
     int start_y;
     int result = 0;
     int i;
-    if (depth_frame_begin(&frame, display, depth, layers, cache_state, (uint64_t)page, 0) != 0)
+    uint64_t content_key = ((uint64_t)page << 3) |
+                           ((uint64_t)(menu_3d & 3) << 1) |
+                           (uint64_t)(has_apps ? 1 : 0);
+    if (depth_frame_begin(&frame, display, depth, layers, cache_state, content_key, 0) != 0)
         return -1;
     if (page == PAGE_FILE_MANAGER) {
         if (frame.full) {
@@ -479,13 +489,13 @@ static int draw_menu(Display *display, Font *font, int page, int selected,
         }
         return depth_frame_present(&frame);
     }
-    menu_items(page, &items, &count);
+    menu_items(page, has_apps, &items, &count);
     if (page == PAGE_INFO && frame.full)
         collect_system_info(display, info);
     total_height = row_height * count;
     start_y = ((int)display->mode.vdisplay - total_height) / 2;
     if (frame.full) {
-        menu_view_draw_page(display, font, depth, layers, page, selected, info);
+        menu_view_draw_page(display, font, depth, layers, page, has_apps, selected, info);
         result = depth_frame_update_rect(&frame, 0, start_y, display->mode.hdisplay,
                                          total_height, start_y + selected * row_height,
                                          start_y + selected * row_height + row_height - 8);
@@ -498,7 +508,7 @@ static int draw_menu(Display *display, Font *font, int page, int selected,
             int bar_bottom = row == selected ? y + row_height - 8 : 0;
             if (i == 1 && row == rows[0])
                 continue;
-            menu_view_draw_row(display, font, depth, layers, page, row, selected, info);
+            menu_view_draw_row(display, font, depth, layers, page, has_apps, row, selected, info);
             result = depth_frame_update_rect(&frame, 0, y, display->mode.hdisplay,
                                              row_height, bar_top, bar_bottom);
             if (result != 0)
@@ -539,15 +549,16 @@ static int save_menu_settings(int seconds, int button_reversed, int auto_play,
     return save_settings(seconds, button_reversed, auto_play, menu_3d);
 }
 
-static MenuAction handle_message(char *message, int *page, int *selected, int *changed,
-                                 int *slideshow_duration, int *button_reversed,
-                                 int *auto_play, int *menu_3d)
+static MenuAction handle_message(char *message, int *page, int has_apps, int *selected,
+                                 int *changed, int *slideshow_duration,
+                                 int *button_reversed, int *auto_play, int *menu_3d)
 {
     int previous_page = *page;
     int previous_selected = *selected;
     MenuState state = {
         .page = *page,
         .selected = *selected,
+        .has_apps = has_apps,
         .slideshow_duration = *slideshow_duration,
         .button_reversed = *button_reversed,
         .auto_play = *auto_play,
@@ -578,7 +589,7 @@ static MenuAction handle_message(char *message, int *page, int *selected, int *c
 }
 
 static MenuAction consume_serial(int fd, char *message, size_t *message_length,
-                                 int *page, int *selected, int *changed,
+                                 int *page, int has_apps, int *selected, int *changed,
                                  int *slideshow_duration, int *button_reversed,
                                  int *auto_play, int *menu_3d)
 {
@@ -600,7 +611,7 @@ static MenuAction consume_serial(int fd, char *message, size_t *message_length,
                 if (*message_length) {
                     MenuAction next_action;
                     message[*message_length] = '\0';
-                    next_action = handle_message(message, page, selected, changed,
+                    next_action = handle_message(message, page, has_apps, selected, changed,
                                                  slideshow_duration, button_reversed,
                                                  auto_play, menu_3d);
                     if (next_action != ACTION_NONE)
@@ -646,7 +657,7 @@ static MenuAction consume_serial(int fd, char *message, size_t *message_length,
 
 static void usage(const char *program)
 {
-    printf("Usage: %s [--drm-device /dev/dri/card0] [--serial /dev/ttyS5] [--font PATH]\n", program);
+    printf("Usage: %s [--drm-device /dev/dri/card0] [--serial /dev/ttyS5] [--font PATH] [--apps-dir PATH]\n", program);
 }
 
 static int launch_sway(Display *display, pid_t *sway_pid)
@@ -794,6 +805,7 @@ int main(int argc, char **argv)
     const char *drm_path = "/dev/dri/card0";
     const char *serial_path = "/dev/ttyS5";
     const char *font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    const char *apps_dir = APPS_ROOT;
     Display display;
     Font font;
     DepthEffect depth;
@@ -809,6 +821,7 @@ int main(int argc, char **argv)
     int serial_fd;
     pid_t dufs_pid = -1;
     int page = PAGE_MAIN;
+    int has_apps = 0;
     int selected = 0;
     int changed = 1;
     int cached_selected = -1;
@@ -846,6 +859,8 @@ int main(int argc, char **argv)
             serial_path = argv[++i];
         } else if (i + 1 < argc && strcmp(argv[i], "--font") == 0) {
             font_path = argv[++i];
+        } else if (i + 1 < argc && strcmp(argv[i], "--apps-dir") == 0) {
+            apps_dir = argv[++i];
         } else if (strcmp(argv[i], "--help") == 0) {
             usage(argv[0]);
             return 0;
@@ -861,6 +876,7 @@ initialize_menu:
     memset(&cache_state, 0, sizeof(cache_state));
     requested_action = ACTION_NONE;
     page = PAGE_MAIN;
+    has_apps = apps_scan_has_apps(apps_dir);
     selected = 0;
     changed = 1;
     cached_selected = -1;
@@ -883,9 +899,10 @@ initialize_menu:
         display_close(&display);
         return 1;
     }
+    depth_effect_apply_mode(&depth, NULL, menu_3d);
     memset(layers, 0, sizeof(layers));
-    if (depth_layer_create(&display, &layers[0], 70.0f) != 0 ||
-        depth_layer_create(&display, &layers[1], -56.0f) != 0) {
+    if (depth_layer_create(&display, &layers[0], depth.front_disparity) != 0 ||
+        depth_layer_create(&display, &layers[1], depth.back_disparity) != 0) {
         fprintf(stderr, "Unable to allocate menu depth layers\n");
         depth_layer_destroy(&layers[0]);
         depth_layer_destroy(&layers[1]);
@@ -894,7 +911,6 @@ initialize_menu:
         display_close(&display);
         return 1;
     }
-    depth.stereo = menu_3d;
     serial_fd = serial_open(serial_path);
     if (serial_fd < 0) {
         fprintf(stderr, "Unable to open serial port %s: %s\n", serial_path, strerror(errno));
@@ -924,8 +940,8 @@ menu_loop:
         else if (page != PAGE_FILE_MANAGER && dufs_pid > 0)
             stop_dufs(&dufs_pid);
         if (changed) {
-            if (draw_menu(&display, &font, page, selected, cached_selected,
-                          &info, &depth, &cache_state, layers) != 0) {
+            if (draw_menu(&display, &font, page, has_apps, menu_3d, selected,
+                          cached_selected, &info, &depth, &cache_state, layers) != 0) {
                 fprintf(stderr, "Display update failed: %s\n", strerror(errno));
                 break;
             }
@@ -938,10 +954,10 @@ menu_loop:
                 char keyboard_message[32];
                 usb_keyboard_prepare_command(command, button_reversed);
                 snprintf(keyboard_message, sizeof(keyboard_message), "{\"cmd\":\"%s\"}", command);
-                requested_action = handle_message(keyboard_message, &page, &selected, &changed,
-                                                  &slideshow_duration, &button_reversed,
+                requested_action = handle_message(keyboard_message, &page, has_apps, &selected,
+                                                  &changed, &slideshow_duration, &button_reversed,
                                                   &auto_play, &menu_3d);
-                depth.stereo = menu_3d;
+                depth_effect_apply_mode(&depth, layers, menu_3d);
                 continue;
             }
         }
@@ -954,10 +970,10 @@ menu_loop:
         }
         if (pfd[0].revents & POLLIN) {
             requested_action = consume_serial(serial_fd, message, &message_length,
-                                              &page, &selected, &changed,
+                                              &page, has_apps, &selected, &changed,
                                               &slideshow_duration, &button_reversed,
                                               &auto_play, &menu_3d);
-            depth.stereo = menu_3d;
+            depth_effect_apply_mode(&depth, layers, menu_3d);
             if ((int)requested_action < 0) {
                 fprintf(stderr, "Serial read failed: %s\n", strerror(errno));
                 requested_action = ACTION_NONE;
@@ -971,6 +987,22 @@ menu_loop:
     }
     stop_dufs(&dufs_pid);
     volume_preview_stop();
+    if (requested_action == ACTION_APPS) {
+        int apps_result = apps_run(&display, &font, &depth, layers, serial_fd, &keyboard,
+                                   button_reversed, apps_dir);
+        requested_action = action_for_serial_result(apps_result);
+        if (requested_action == ACTION_NONE && apps_result != 0)
+            fprintf(stderr, "Apps view closed after an input error\n");
+        has_apps = apps_scan_has_apps(apps_dir);
+        if (!has_apps && page == PAGE_MAIN && selected >= 6)
+            selected = 0;
+        cache_state.initialized = 0;
+        cached_selected = -1;
+        changed = 1;
+        tcflush(serial_fd, TCIFLUSH);
+        if (running && requested_action == ACTION_NONE)
+            goto menu_loop;
+    }
     if (requested_action == ACTION_GALLERY) {
         int gallery_result = gallery_run(&display, &font, &depth, layers, serial_fd, &keyboard,
                                          slideshow_duration, button_reversed, pending_auto_play);
@@ -1000,7 +1032,7 @@ menu_loop:
         else
             printf("Pre-render cache cleared\n");
         requested_action = ACTION_NONE;
-        menu_return_to_parent(&page, &selected);
+        menu_return_to_parent(&page, &selected, has_apps);
         changed = 1;
         tcflush(serial_fd, TCIFLUSH);
         if (running)

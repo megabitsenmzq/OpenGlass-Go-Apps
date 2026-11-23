@@ -50,3 +50,11 @@ Icon
 *.dSYM/
 *.idb
 *.pdb
+
+# Dependency files and local build/test outputs
+*.d
+build/
+/lkg-menu/lkg-menu
+/lkg-player/lkg-player
+/lkg-player/dist/
+/lkg-mcu/lkg-mcu

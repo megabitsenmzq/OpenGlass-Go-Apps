@@ -1,4 +1,5 @@
 #include "../test.h"
+#include "apps_view.h"
 #include "depth_fakes.h"
 #include "file_manager_view.h"
 #include "menu_view.h"
@@ -116,9 +117,12 @@ static int test_menu_semantics(Display *display, Font *font, DepthLayer layers[2
     const char *expected[] = {
         "Gallery", "File Manager", "Desktop (Sway)", "Settings", "Return to TTY", "Power Off"
     };
+    const char *expected_with_apps[] = {
+        "Apps", "Gallery", "File Manager", "Desktop (Sway)", "Settings", "Return to TTY", "Power Off"
+    };
     int i;
     text_op_count = 0;
-    menu_view_draw_page(display, font, &depth, layers, PAGE_MAIN, 0, &info);
+    menu_view_draw_page(display, font, &depth, layers, PAGE_MAIN, 0, 0, &info);
     TEST_ASSERT(text_op_count == 6);
     for (i = 0; i < 6; ++i) {
         TEST_STRING(text_ops[i].text, expected[i]);
@@ -129,9 +133,15 @@ static int test_menu_semantics(Display *display, Font *font, DepthLayer layers[2
             TEST_ASSERT(text_ops[i].baseline - text_ops[i - 1].baseline == 150);
     }
 
+    text_op_count = 0;
+    menu_view_draw_page(display, font, &depth, layers, PAGE_MAIN, 1, 0, &info);
+    TEST_ASSERT(text_op_count == 7);
+    for (i = 0; i < 7; ++i)
+        TEST_STRING(text_ops[i].text, expected_with_apps[i]);
+
     depth.stereo = 1;
     text_op_count = 0;
-    menu_view_draw_page(display, font, &depth, layers, PAGE_SETTINGS, 0, &info);
+    menu_view_draw_page(display, font, &depth, layers, PAGE_SETTINGS, 0, 0, &info);
     TEST_ASSERT(text_op_count == 10);
     TEST_ASSERT(text_ops[0].bold == 1);
     TEST_ASSERT(text_ops[1].bold == 0);
@@ -139,7 +149,7 @@ static int test_menu_semantics(Display *display, Font *font, DepthLayer layers[2
     TEST_ASSERT(find_text("Connected") < 0);
 
     text_op_count = 0;
-    menu_view_draw_page(display, font, &depth, layers, PAGE_INFO, 1, &info);
+    menu_view_draw_page(display, font, &depth, layers, PAGE_INFO, 0, 1, &info);
     TEST_ASSERT(find_text("Serial") >= 0);
     i = find_text("LKG-TEST01");
     TEST_ASSERT(i >= 0);
@@ -168,14 +178,14 @@ static int test_focus_dirty_pixels(Display *display, Font *font, DepthLayer laye
     const int start_y = (2560 - row_height * 6) / 2;
     int layer;
     int y;
-    menu_view_draw_page(display, font, &depth, layers, PAGE_MAIN, 0, &info);
+    menu_view_draw_page(display, font, &depth, layers, PAGE_MAIN, 0, 0, &info);
     saved[0] = malloc(layers[0].buffer.size);
     saved[1] = malloc(layers[1].buffer.size);
     TEST_ASSERT(saved[0] && saved[1]);
     memcpy(saved[0], layers[0].buffer.pixels, layers[0].buffer.size);
     memcpy(saved[1], layers[1].buffer.pixels, layers[1].buffer.size);
-    menu_view_draw_row(display, font, &depth, layers, PAGE_MAIN, 0, 1, &info);
-    menu_view_draw_row(display, font, &depth, layers, PAGE_MAIN, 1, 1, &info);
+    menu_view_draw_row(display, font, &depth, layers, PAGE_MAIN, 0, 0, 1, &info);
+    menu_view_draw_row(display, font, &depth, layers, PAGE_MAIN, 0, 1, 1, &info);
     for (layer = 0; layer < 2; ++layer) {
         for (y = 0; y < 2560; ++y) {
             int old_row = y >= start_y && y < start_y + row_height;
@@ -467,6 +477,53 @@ static int test_file_manager(Display *display, Font *font, DepthLayer layers[2])
     return 0;
 }
 
+static int test_apps_view(Display *display, Font *font, DepthLayer layers[2])
+{
+    DepthEffect depth = {0};
+    ExternalApp app = {0};
+    int idx;
+    app.name = "Hello World";
+    TEST_ASSERT(APPS_VISIBLE_ROWS == 17);
+    TEST_ASSERT(apps_view_page_start(0) == 0);
+    TEST_ASSERT(apps_view_page_start(1) == 0);
+    TEST_ASSERT(apps_view_page_start(16) == 0);
+    TEST_ASSERT(apps_view_page_start(17) == 16);
+    TEST_ASSERT(apps_view_start_y(display, 2) == 1130);
+    TEST_ASSERT(apps_view_row_y(display, 2, 0, 0) == 1130);
+    TEST_ASSERT(apps_view_row_y(display, 2, 1, 0) == 1280);
+
+    depth.stereo = 1;
+    memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
+    memset(layers[1].buffer.pixels, 0, layers[1].buffer.size);
+    text_op_count = 0;
+    apps_view_draw_row(display, font, &depth, layers, 0, 1130, 1, 1, NULL);
+    apps_view_draw_row(display, font, &depth, layers, 1, 1280, 1, 1, &app);
+    TEST_ASSERT(text_op_count == 2);
+    TEST_STRING(text_ops[0].text, "Back");
+    TEST_ASSERT(text_ops[0].color == 0xffd8d8d8 && text_ops[0].bold == 0);
+    TEST_STRING(text_ops[1].text, "Hello World");
+    TEST_ASSERT(text_ops[1].color == 0xff101014 && text_ops[1].size == 64 && text_ops[1].bold == 1);
+
+    text_op_count = 0;
+    apps_view_draw_text_input(display, font, &depth, layers, "Edit Greeting",
+                              "World", 0, 25, 1, 1);
+    TEST_ASSERT(find_text("Back") >= 0);
+    idx = find_text("Edit");
+    TEST_ASSERT(idx >= 0 && text_ops[idx].size == 48);
+    idx = find_text("Edit Greeting");
+    TEST_ASSERT(idx >= 0 && text_ops[idx].size == 64);
+    TEST_ASSERT(find_text("Hello World") < 0);
+    TEST_ASSERT(find_text("Input") >= 0);
+    TEST_ASSERT(find_text("World") >= 0);
+
+    text_op_count = 0;
+    apps_view_draw_status(display, font, &depth, layers, 1, "App exited with error",
+                          "Hello World (exit 1)");
+    TEST_ASSERT(find_text("App exited with error") >= 0);
+    TEST_ASSERT(find_text("Hello World (exit 1)") >= 0);
+    return 0;
+}
+
 int main(void)
 {
     const char *font_path = getenv("LKG_TEST_FONT");
@@ -519,6 +576,9 @@ int main(void)
         ++tests_failed;
     ++tests_run;
     if (test_usb_keyboard() != 0)
+        ++tests_failed;
+    ++tests_run;
+    if (test_apps_view(&display, &font, layers) != 0)
         ++tests_failed;
     free(layers[0].buffer.pixels);
     free(layers[1].buffer.pixels);

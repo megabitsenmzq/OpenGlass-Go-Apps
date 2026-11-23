@@ -25,11 +25,11 @@ int test_menu_model(void)
     int page;
     int changed = 0;
     MenuState state = { .page = PAGE_MAIN, .slideshow_duration = 5, .button_reversed = 1 };
-    const int counts[] = { 6, 10, 2, 17, 3, 3, 3, 12, 11, 1 };
+    const int counts[] = { 6, 10, 2, 17, 3, 4, 3, 12, 11, 1 };
     for (page = PAGE_MAIN; page <= PAGE_FILE_MANAGER; ++page) {
         const char **items;
         int count;
-        menu_items(page, &items, &count);
+        menu_items(page, 0, &items, &count);
         TEST_ASSERT(count == counts[page]);
         TEST_ASSERT(items[0] != NULL);
         state.page = page;
@@ -107,7 +107,7 @@ int test_menu_model(void)
     state.page = PAGE_CLEAR_CACHE;
     state.selected = 1;
     TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_CLEAR_CACHE);
-    menu_return_to_parent(&state.page, &state.selected);
+    menu_return_to_parent(&state.page, &state.selected, 0);
     TEST_ASSERT(state.page == PAGE_SETTINGS && state.selected == 2);
     state.page = PAGE_MAIN;
     state.selected = 0;
@@ -140,5 +140,83 @@ int test_menu_model(void)
     changed = 0;
     TEST_ASSERT(menu_handle_message(&state, "invalid", &changed, NULL, NULL) == ACTION_NONE);
     TEST_ASSERT(changed == 0);
+
+    {
+        const char **items = NULL;
+        int count = 0;
+        menu_items(PAGE_MAIN, 1, &items, &count);
+        TEST_ASSERT(count == 7);
+        TEST_STRING(items[0], "Apps");
+        TEST_STRING(items[1], "Gallery");
+        TEST_STRING(items[6], "Power Off");
+
+        state.has_apps = 1;
+        state.button_reversed = 1;
+        state.page = PAGE_MAIN;
+        state.selected = 0;
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_APPS);
+        state.selected = 1;
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_GALLERY);
+        state.selected = 2;
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_FILE_MANAGER && state.selected == 0);
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_MAIN && state.selected == 2);
+        state.selected = 4;
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_SETTINGS && state.selected == 0);
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_MAIN && state.selected == 4);
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_SETTINGS && state.selected == 0);
+        TEST_ASSERT(command(&state, "LOOP", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_MAIN && state.selected == 4);
+        state.selected = 0;
+        TEST_ASSERT(command(&state, "NEXT", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.selected == 6);
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_POWER_OFF);
+    }
+
+    {
+        const char **items = NULL;
+        int count = 0;
+        menu_items(PAGE_3D_MENU, 0, &items, &count);
+        TEST_ASSERT(count == 4);
+        TEST_STRING(items[0], "Back");
+        TEST_STRING(items[1], "Off");
+        TEST_STRING(items[2], "Subtle");
+        TEST_STRING(items[3], "Deep");
+
+        state.has_apps = 0;
+        state.button_reversed = 1;
+        state.menu_3d = MENU_3D_SUBTLE;
+        state.page = PAGE_SETTINGS;
+        state.selected = 5;
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_3D_MENU && state.selected == 2);
+        state.selected = 3;
+        save_calls = 0;
+        TEST_ASSERT(menu_handle_message(&state, "{\"cmd\":\"PLPA\"}", &changed,
+                                        save_settings, NULL) == ACTION_NONE);
+        TEST_ASSERT(state.menu_3d == MENU_3D_DEEP);
+        TEST_ASSERT(state.page == PAGE_SETTINGS && state.selected == 5);
+        TEST_ASSERT(save_calls == 1);
+
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_3D_MENU && state.selected == 3);
+        state.selected = 1;
+        TEST_ASSERT(menu_handle_message(&state, "{\"cmd\":\"PLPA\"}", &changed,
+                                        save_settings, NULL) == ACTION_NONE);
+        TEST_ASSERT(state.menu_3d == MENU_3D_OFF);
+        TEST_ASSERT(save_calls == 2);
+
+        TEST_ASSERT(command(&state, "PLPA", &changed) == ACTION_NONE);
+        TEST_ASSERT(state.page == PAGE_3D_MENU && state.selected == 1);
+        state.selected = 2;
+        TEST_ASSERT(menu_handle_message(&state, "{\"cmd\":\"PLPA\"}", &changed,
+                                        save_settings, NULL) == ACTION_NONE);
+        TEST_ASSERT(state.menu_3d == MENU_3D_SUBTLE);
+        TEST_ASSERT(save_calls == 3);
+    }
     return 0;
 }

@@ -26,6 +26,7 @@ typedef enum {
 typedef struct {
     UsbKeyType type;
     char character;
+    int code;
 } UsbKeyEvent;
 
 void usb_keyboard_init(UsbKeyboard *keyboard);
