@@ -9,15 +9,16 @@ void file_manager_view_draw(Display *display, Font *font, const DepthEffect *dep
 {
     const int margin = display->mode.hdisplay / 12;
     const int row_height = display->mode.vdisplay / 17;
+    const int bar_height = row_height - 8;
     const int top_margin = row_height / 6;
-    const int ascender = font->face->size->metrics.ascender >> 6;
-    const int descender = font->face->size->metrics.descender >> 6;
-    const int baseline = top_margin + (row_height - (ascender - descender)) / 2 + ascender;
+    int baseline;
     Buffer *content = &layers[1].buffer;
     char url[192];
     QRcode *code;
+    FT_Set_Pixel_Sizes(font->face, 0, 64);
+    baseline = font_centered_baseline(font, top_margin, bar_height);
     draw_back_arrow(display, &layers[0].buffer, margin / 3,
-                    top_margin + row_height / 2, 0x101014);
+                    top_margin + bar_height / 2, 0x101014);
     if (depth->stereo)
         draw_text_bold(display, &layers[0].buffer, font, "Back", margin + 24, baseline, 0x101014);
     else

@@ -524,6 +524,34 @@ static int test_apps_view(Display *display, Font *font, DepthLayer layers[2])
     return 0;
 }
 
+static int test_utf8_app_font(Display *display, Font *menu_font, DepthLayer layers[2],
+                              const char *font_path)
+{
+    static const unsigned int codepoints[] = {
+        0x3053, 0x3053, 0x306b, 0x3057, 0x304b, 0x306a,
+        0x3044, 0x3063, 0x3066, 0x8a00, 0x3063, 0x3066
+    };
+    Font app_font;
+    int expected_width = 0;
+    size_t i;
+    TEST_ASSERT(font_open(&app_font, font_path, 64) == 0);
+    app_font.utf8 = 1;
+    for (i = 0; i < sizeof(codepoints) / sizeof(codepoints[0]); ++i) {
+        FT_UInt glyph = FT_Get_Char_Index(app_font.face, codepoints[i]);
+        TEST_ASSERT(FT_Load_Glyph(app_font.face, glyph, FT_LOAD_DEFAULT) == 0);
+        expected_width += app_font.face->glyph->advance.x >> 6;
+    }
+    TEST_ASSERT(font_text_width(&app_font, "ここにしかないって言って") == expected_width);
+    text_op_count = 0;
+    draw_text_fit(display, &layers[0].buffer, &app_font, "ここここ", 0, 100, 0xffffffffu,
+                  font_text_width(&app_font, "こ") + font_text_width(&app_font, "..."), 0);
+    TEST_ASSERT(text_op_count == 1);
+    TEST_STRING(text_ops[0].text, "こ...");
+    TEST_ASSERT(menu_font->utf8 == 0);
+    font_close(&app_font);
+    return 0;
+}
+
 int main(void)
 {
     const char *font_path = getenv("LKG_TEST_FONT");
@@ -579,6 +607,9 @@ int main(void)
         ++tests_failed;
     ++tests_run;
     if (test_apps_view(&display, &font, layers) != 0)
+        ++tests_failed;
+    ++tests_run;
+    if (test_utf8_app_font(&display, &font, layers, font_path) != 0)
         ++tests_failed;
     free(layers[0].buffer.pixels);
     free(layers[1].buffer.pixels);

@@ -332,6 +332,7 @@ static void external_app_free(ExternalApp *app)
     free(app->version);
     free(app->description);
     free(app->author);
+    free(app->font_path);
     memset(app, 0, sizeof(*app));
 }
 
@@ -348,8 +349,10 @@ static int parse_app_json(const char *json_path, const char *dir_name,
     char description[256] = {0};
     char author[128] = {0};
     char render[32] = "hosted";
+    char font[PATH_MAX] = {0};
     int api_version = (int)LKG_APP_API_VERSION;
     char exec_full[PATH_MAX];
+    char font_full[PATH_MAX];
     struct stat exec_st;
     int first = 1;
 
@@ -417,6 +420,9 @@ static int parse_app_json(const char *json_path, const char *dir_name,
         } else if (strcmp(key, "render") == 0) {
             if (json_parse_string(&reader, render, sizeof(render)) != 0)
                 goto fail;
+        } else if (strcmp(key, "font") == 0) {
+            if (json_parse_string(&reader, font, sizeof(font)) != 0)
+                goto fail;
         } else if (strcmp(key, "api_version") == 0) {
             if (json_parse_int(&reader, &api_version) != 0)
                 goto fail;
@@ -442,6 +448,8 @@ static int parse_app_json(const char *json_path, const char *dir_name,
         app->render_mode = LKG_RENDER_DRM;
     else
         return -1;
+    if (font[0] && font[0] != '/' && !valid_relative_exec(font))
+        return -1;
 
     if (snprintf(exec_full, sizeof(exec_full), "%s/%s", dir_path, exec_rel) >=
         (int)sizeof(exec_full))
@@ -457,8 +465,14 @@ static int parse_app_json(const char *json_path, const char *dir_name,
     app->description = strdup(description);
     app->author = strdup(author);
     app->api_version = api_version;
+    if (font[0] == '/') {
+        app->font_path = strdup(font);
+    } else if (font[0] && snprintf(font_full, sizeof(font_full), "%s/%s", dir_path, font) <
+               (int)sizeof(font_full)) {
+        app->font_path = strdup(font_full);
+    }
     if (!app->dir_name || !app->dir_path || !app->exec_path || !app->name ||
-        !app->version || !app->description || !app->author) {
+        !app->version || !app->description || !app->author || (font[0] && !app->font_path)) {
         external_app_free(app);
         return -1;
     }

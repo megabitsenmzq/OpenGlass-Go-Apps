@@ -765,7 +765,8 @@ static pid_t start_dufs(void)
     pid_t pid = fork();
     if (pid == 0) {
         execl("/usr/local/bin/dufs", "dufs", "--bind", "0.0.0.0",
-              "--port", "5000", "--allow-all", "/home/lkg/data/media", (char *)NULL);
+              "--port", "5000", "--allow-upload", "--allow-delete",
+              "--allow-search", "--allow-archive", "/home/lkg/data", (char *)NULL);
         _exit(127);
     }
     if (pid > 0) {
@@ -800,11 +801,14 @@ static void stop_dufs(pid_t *pid)
     *pid = -1;
 }
 
+#define DEFAULT_FONT_PATH "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+#define FALLBACK_FONT_PATH "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
 int main(int argc, char **argv)
 {
     const char *drm_path = "/dev/dri/card0";
     const char *serial_path = "/dev/ttyS5";
-    const char *font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
+    const char *font_path = NULL;
     const char *apps_dir = APPS_ROOT;
     Display display;
     Font font;
@@ -887,11 +891,22 @@ initialize_menu:
             return 1;
         }
     }
-    if (font_open(&font, font_path, 64) != 0) {
-        fprintf(stderr, "Unable to load font: %s\n", font_path);
-        display_close(&display);
-        return 1;
+    if (font_path) {
+        if (font_open(&font, font_path, 64) != 0) {
+            fprintf(stderr, "Unable to load font: %s\n", font_path);
+            display_close(&display);
+            return 1;
+        }
+    } else if (font_open(&font, DEFAULT_FONT_PATH, 64) != 0) {
+        fprintf(stderr, "Unable to load %s; falling back to %s\n",
+                DEFAULT_FONT_PATH, FALLBACK_FONT_PATH);
+        if (font_open(&font, FALLBACK_FONT_PATH, 64) != 0) {
+            fprintf(stderr, "Unable to load fallback font: %s\n", FALLBACK_FONT_PATH);
+            display_close(&display);
+            return 1;
+        }
     }
+    font.utf8 = 1;
     if (depth_effect_open(&depth, &display, "/run/lkg/visual.json") != 0) {
         fprintf(stderr, "Unable to initialize depth rendering\n");
         depth_effect_close(&depth);

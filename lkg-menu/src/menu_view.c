@@ -7,17 +7,17 @@ static void draw_menu_item(Display *display, Font *font, const DepthEffect *dept
                            const SystemInfo *info, int index, int active, int y)
 {
     const int row_height = display->mode.vdisplay / 17;
+    const int bar_height = row_height - 8;
     const int margin = display->mode.hdisplay / 12;
-    const int ascender = font->face->size->metrics.ascender >> 6;
-    const int descender = font->face->size->metrics.descender >> 6;
-    const int baseline = y + (row_height - (ascender - descender)) / 2 + ascender;
+    int baseline;
     uint32_t color = (active ? 0x101014 : 0xd8d8d8) | 0xff000000u;
     Buffer *item_buffer = active ? &layers[0].buffer : &layers[1].buffer;
     void (*draw_item_text)(Display *, Buffer *, Font *, const char *, int, int,
                            uint32_t) = active && depth->stereo ? draw_text_bold : draw_text;
     FT_Set_Pixel_Sizes(font->face, 0, 64);
+    baseline = font_centered_baseline(font, y, bar_height);
     if (page != PAGE_MAIN && index == 0)
-        draw_back_arrow(display, item_buffer, margin / 3, y + row_height / 2, color);
+        draw_back_arrow(display, item_buffer, margin / 3, y + bar_height / 2, color);
     if (page == PAGE_INFO && index > 0) {
         const char *value = index == 1 ? info->serial :
                             index == 2 ? info->cpu :

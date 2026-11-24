@@ -65,7 +65,9 @@ typedef enum {
     LKG_NAV_PREV,
     LKG_NAV_NEXT,
     LKG_NAV_CONFIRM,
-    LKG_NAV_BACK
+    LKG_NAV_BACK,
+    LKG_NAV_PREV_LONG,
+    LKG_NAV_NEXT_LONG
 } LkgNav;
 
 typedef enum {

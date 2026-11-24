@@ -85,5 +85,17 @@ int test_serial_parser(void)
     TEST_STRING(command, "NEXT");
     normalize_button_command(command, 1);
     TEST_STRING(command, "NEXT");
+
+    snprintf(command, sizeof(command), "LOGD");
+    normalize_button_command(command, 0);
+    TEST_STRING(command, "BBTN");
+    normalize_button_command(command, 1);
+    TEST_STRING(command, "BBTN");
+
+    snprintf(command, sizeof(command), "BBTN");
+    normalize_button_command(command, 0);
+    TEST_STRING(command, "LOGD");
+    normalize_button_command(command, 1);
+    TEST_STRING(command, "LOGD");
     return 0;
 }

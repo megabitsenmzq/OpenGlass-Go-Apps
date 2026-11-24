@@ -15,6 +15,7 @@ typedef struct {
     char *version;
     char *description;
     char *author;
+    char *font_path;
     LkgRenderMode render_mode;
     int api_version;
 } ExternalApp;

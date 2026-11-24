@@ -28,6 +28,7 @@ apps/
 - `name` (required): Display name shown in the `Apps` menu.
 - `exec` (required): Relative executable path inside the app folder (no `/` prefix or `..`).
 - `render` (optional): `"hosted"` (default) or `"drm"`.
+- `font` (optional, hosted only): Absolute system font path, or a safe relative path inside the app folder such as `"fonts/NotoSansCJK-Regular.ttc"`. The host creates a separate font with UTF-8 decoding for this app only; the menu and other apps keep their existing font and layout. If loading fails, the app falls back to the menu font with a warning.
 - `api_version` (optional): Protocol version, currently `1`.
 
 ## Environment Variables Passed to the App
@@ -43,7 +44,7 @@ apps/
 Apps link only against `libc` and `sdk/lkg_app.c` (`-std=c11 -I<path-to-sdk>`):
 
 - **Constants & Theme**: `lkg_app_info(app)` exposes `screen_width`, `screen_height`, `row_height` (`vdisplay / 17`), `margin` (`hdisplay / 12`), `top_margin`, `bar_gap` (`8`), `menu_3d`, `button_reversed`, standard font sizes (`LKG_FONT_SIZE_LARGE` 64, `LKG_FONT_SIZE_KEY` 56, `LKG_FONT_SIZE_MEDIUM` 48, `LKG_FONT_SIZE_CAPTION` 43, `LKG_FONT_SIZE_SMALL` 32), layer depths (`LKG_DEPTH_SUBTLE_POP_OUT` +35.0f / `LKG_DEPTH_SUBTLE_RECESSED` -28.0f as default `LKG_DEPTH_POP_OUT`/`LKG_DEPTH_RECESSED`, `LKG_DEPTH_DEEP_POP_OUT` +70.0f / `LKG_DEPTH_DEEP_RECESSED` -56.0f, `LKG_DEPTH_SCREEN` 0.0f), and standard ARGB colors.
-- **Input**: `lkg_app_poll_event()` returns `LKG_EVENT_BUTTON` (normalized physical buttons `LKG_NAV_PREV`/`NEXT`/`CONFIRM`/`BACK`), `LKG_EVENT_KEY` (USB keyboard arrows, Enter, Esc, Backspace, and translated characters plus raw Linux `keycode`), and `LKG_EVENT_QUIT`.
+- **Input**: `lkg_app_poll_event()` returns `LKG_EVENT_BUTTON` (normalized physical buttons `LKG_NAV_PREV`/`NEXT`/`CONFIRM`/`BACK`, plus `LKG_NAV_PREV_LONG`/`NEXT_LONG` for the five-second previous/next long presses), `LKG_EVENT_KEY` (USB keyboard arrows, Enter, Esc, Backspace, and translated characters plus raw Linux `keycode`), and `LKG_EVENT_QUIT`.
 - **Virtual Keyboard**: `lkg_app_text_input()` opens the menu's 3D on-screen keyboard modal (with USB keyboard passthrough) and returns up to 64 characters.
 - **3D Layered Rendering**: Draw onto `LKG_LAYER_FRONT` (0) and `LKG_LAYER_BACK` (1) using `lkg_app_draw_rect`, `lkg_app_draw_text`, `lkg_app_draw_text_fit`, `lkg_app_draw_back_arrow`, `lkg_app_draw_menu_row`, or write ARGB8888 pixels directly into the shared memory buffer from `lkg_app_layer_pixels()`, then call `lkg_app_present*()` to interlace on GPU and flip DRM.
 

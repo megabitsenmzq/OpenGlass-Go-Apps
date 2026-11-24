@@ -67,6 +67,7 @@ int test_apps_scan(void)
              "  \"description\": \"Test app\",\n"
              "  \"author\": \"LKG\",\n"
              "  \"render\": \"hosted\",\n"
+             "  \"font\": \"assets/NotoSansCJK-Regular.ttc\",\n"
              "  \"api_version\": 1\n"
              "}\n",
              "demo", 0644);
@@ -75,6 +76,11 @@ int test_apps_scan(void)
     make_app(root, "a-drm",
              "{\"name\": \"Alpha DRM\", \"exec\": \"alpha\", \"render\": \"drm\"}",
              "alpha", 0755);
+
+    make_app(root, "b-font",
+             "{\"name\": \"Absolute Font\", \"exec\": \"font\", "
+             "\"font\": \"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc\"}",
+             "font", 0644);
 
     /* Hidden folder should be ignored */
     make_app(root, ".hidden",
@@ -99,6 +105,10 @@ int test_apps_scan(void)
              "{\"name\": \"Abs\", \"exec\": \"/bin/sh\"}",
              "ok", 0755);
 
+    make_app(root, "font-traversal",
+             "{\"name\": \"Font Traversal\", \"exec\": \"ok\", \"font\": \"../font.ttc\"}",
+             "ok", 0755);
+
     /* Unsupported render mode rejected */
     make_app(root, "bad-render",
              "{\"name\": \"Bad Render\", \"exec\": \"ok\", \"render\": \"wayland\"}",
@@ -116,19 +126,26 @@ int test_apps_scan(void)
 
     TEST_ASSERT(apps_scan_has_apps(root) == 1);
     TEST_ASSERT(apps_scan_directory(&list, root) == 0);
-    TEST_ASSERT(list.count == 2);
+    TEST_ASSERT(list.count == 3);
 
-    TEST_STRING(list.items[0].name, "Alpha DRM");
-    TEST_STRING(list.items[0].dir_name, "a-drm");
-    TEST_ASSERT(list.items[0].render_mode == LKG_RENDER_DRM);
-    TEST_ASSERT(list.items[0].api_version == 1);
+    TEST_STRING(list.items[0].name, "Absolute Font");
+    TEST_STRING(list.items[0].font_path,
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc");
 
-    TEST_STRING(list.items[1].name, "Zeta \"Demo\"");
-    TEST_STRING(list.items[1].dir_name, "z-demo");
-    TEST_STRING(list.items[1].version, "1.2.0");
-    TEST_STRING(list.items[1].description, "Test app");
-    TEST_STRING(list.items[1].author, "LKG");
-    TEST_ASSERT(list.items[1].render_mode == LKG_RENDER_HOSTED);
+    TEST_STRING(list.items[1].name, "Alpha DRM");
+    TEST_STRING(list.items[1].dir_name, "a-drm");
+    TEST_ASSERT(list.items[1].render_mode == LKG_RENDER_DRM);
+    TEST_ASSERT(list.items[1].api_version == 1);
+    TEST_ASSERT(list.items[1].font_path == NULL);
+
+    TEST_STRING(list.items[2].name, "Zeta \"Demo\"");
+    TEST_STRING(list.items[2].dir_name, "z-demo");
+    TEST_STRING(list.items[2].version, "1.2.0");
+    TEST_STRING(list.items[2].description, "Test app");
+    TEST_STRING(list.items[2].author, "LKG");
+    TEST_ASSERT(list.items[2].render_mode == LKG_RENDER_HOSTED);
+    snprintf(path, sizeof(path), "%s/z-demo/assets/NotoSansCJK-Regular.ttc", root);
+    TEST_STRING(list.items[2].font_path, path);
     apps_list_free(&list);
 
     /* Clean up temporary directories */
@@ -136,11 +153,13 @@ int test_apps_scan(void)
         const char *dirs[] = {
             "z-demo/app.json", "z-demo/demo", "z-demo",
             "a-drm/app.json", "a-drm/alpha", "a-drm",
+            "b-font/app.json", "b-font/font", "b-font",
             ".hidden/app.json", ".hidden/hid", ".hidden",
             "bad-json/app.json", "bad-json/bin", "bad-json",
             "missing-bin/app.json", "missing-bin",
             "traversal/app.json", "traversal/ok", "traversal",
             "abs-exec/app.json", "abs-exec/ok", "abs-exec",
+            "font-traversal/app.json", "font-traversal/ok", "font-traversal",
             "bad-render/app.json", "bad-render/ok", "bad-render",
             "bad-api/app.json", "bad-api/ok", "bad-api",
             "empty-name/app.json", "empty-name/ok", "empty-name"

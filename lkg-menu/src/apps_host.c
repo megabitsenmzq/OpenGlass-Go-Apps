@@ -52,6 +52,10 @@ LkgEvent apps_host_event_from_serial(const char *normalized_cmd)
         event.nav = LKG_NAV_CONFIRM;
     else if (strcmp(normalized_cmd, "LOOP") == 0)
         event.nav = LKG_NAV_BACK;
+    else if (strcmp(normalized_cmd, "LOGD") == 0)
+        event.nav = LKG_NAV_NEXT_LONG;
+    else if (strcmp(normalized_cmd, "BBTN") == 0)
+        event.nav = LKG_NAV_PREV_LONG;
     else
         event.type = LKG_EVENT_NONE;
     return event;
@@ -275,6 +279,7 @@ static int prepare_exec_fd(const char *exec_path, int *use_fexecve)
 
 typedef struct {
     Display *display;
+    Font *menu_font;
     Font *font;
     DepthEffect *depth;
     DepthLayer *app_layers;
@@ -392,7 +397,7 @@ static int modal_draw_cursor(AppHostSession *session, DepthCacheState *modal_cac
                              int include_back)
 {
     Display *display = session->display;
-    Font *font = session->font;
+    Font *font = session->menu_font;
     const DepthEffect *depth = session->depth;
     DepthLayer *layers = session->modal_layers;
     int old_x, old_y, old_w, old_h;
@@ -466,7 +471,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
             } else if (changed == PASSWORD_REDRAW_BACK) {
                 draw_result = modal_draw_cursor(session, &modal_cache, &kb, previous_key, 1);
             } else if (changed == PASSWORD_REDRAW_PASSWORD) {
-                wifi_view_draw_password_field(session->display, session->font,
+                wifi_view_draw_password_field(session->display, session->menu_font,
                                               session->modal_layers, kb.password);
                 draw_result = modal_present_region(session, &modal_cache,
                                                    0, 535, session->display->mode.hdisplay, 140);
@@ -482,7 +487,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
                 draw_rect(session->display, &session->modal_layers[1].buffer,
                           0, top, width, bottom - top, 0);
                 for (i = 0; i < WIFI_KEYBOARD_KEYS; ++i)
-                    wifi_view_draw_password_key(session->display, session->font,
+                    wifi_view_draw_password_key(session->display, session->menu_font,
                                                 session->depth, session->modal_layers, i,
                                                 i == kb.key_selected && !kb.back_selected,
                                                 kb.layout);
@@ -493,7 +498,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
                 if (depth_frame_begin(&frame, session->display, session->depth,
                                       session->modal_layers, &modal_cache, 0, 1) != 0)
                     return -1;
-                apps_view_draw_text_input(session->display, session->font, session->depth,
+                apps_view_draw_text_input(session->display, session->menu_font, session->depth,
                                           session->modal_layers, title, kb.password,
                                           kb.layout, kb.key_selected, kb.back_selected, 1);
                 depth_frame_update_rect(&frame, 0, 0, session->display->mode.hdisplay,
@@ -584,7 +589,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
         out_text[0] = '\0';
 
     session->depth->stereo = session->app_stereo;
-    FT_Set_Pixel_Sizes(session->font->face, 0, 64);
+    FT_Set_Pixel_Sizes(session->menu_font->face, 0, 64);
 
     if (session->frame_initialized) {
         DepthFrame restore;
@@ -932,11 +937,14 @@ static int launch_external_app(Display *display, Font *font, DepthEffect *depth,
     long long last_loop_ms = 0;
     DepthLayer app_layers[2];
     AppHostSession session;
+    Font app_font;
+    int app_font_loaded = 0;
     struct timeval rcv_timeout;
 
     memset(app_layers, 0, sizeof(app_layers));
     memset(&session, 0, sizeof(session));
     session.display = display;
+    session.menu_font = font;
     session.font = font;
     session.depth = depth;
     session.app_layers = app_layers;
@@ -1055,6 +1063,18 @@ static int launch_external_app(Display *display, Font *font, DepthEffect *depth,
     session.sock_fd = sockets[0];
     fill_app_info(&session.info, display, depth, app->render_mode, button_reversed);
     printf("Launched external app: %s (%s)\n", app->name, app->exec_path);
+    if (app->font_path && app->font_path[0] && app->render_mode == LKG_RENDER_HOSTED) {
+        if (strcmp(app->font_path, font->path) == 0 && font->utf8) {
+            printf("App font: %s (shared UTF-8)\n", app->font_path);
+        } else if (font_open(&app_font, app->font_path, 64) == 0) {
+            app_font.utf8 = 1;
+            session.font = &app_font;
+            app_font_loaded = 1;
+            printf("App font: %s (UTF-8)\n", app->font_path);
+        } else {
+            fprintf(stderr, "Unable to load app font %s; using menu font\n", app->font_path);
+        }
+    }
     fflush(stdout);
 
     while (running) {
@@ -1194,6 +1214,8 @@ stop_session:
         pid = -1;
     }
     destroy_shared_layers(app_layers, session.layer_fds);
+    if (app_font_loaded)
+        font_close(&app_font);
     depth->stereo = saved_stereo;
     depth->front_disparity = saved_front;
     depth->back_disparity = saved_back;

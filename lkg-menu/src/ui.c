@@ -2,6 +2,7 @@
 
 #include <ft2build.h>
 #include FT_SYNTHESIS_H
+#include <stdio.h>
 #include <string.h>
 
 int font_open(Font *font, const char *path, int pixel_size)
@@ -18,6 +19,7 @@ int font_open(Font *font, const char *path, int pixel_size)
         FT_Done_FreeType(font->library);
         return -1;
     }
+    snprintf(font->path, sizeof(font->path), "%s", path);
     return 0;
 }
 
@@ -29,8 +31,57 @@ void font_close(Font *font)
         FT_Done_FreeType(font->library);
 }
 
-static int font_glyph_metrics(Font *font, unsigned char character,
-                              FT_UInt *index, int *advance)
+int font_centered_baseline(const Font *font, int box_y, int box_height)
+{
+    int pixel_size = font && font->face && font->face->size ?
+                     (int)font->face->size->metrics.y_ppem : 64;
+    return box_y + box_height / 2 + (pixel_size * 3 + 4) / 8;
+}
+
+static unsigned int font_next_character(const Font *font, const char **text)
+{
+    const unsigned char *input = (const unsigned char *)*text;
+    unsigned int value;
+    unsigned int minimum;
+    int length;
+    int i;
+    if (!font->utf8 || input[0] < 0x80) {
+        *text += 1;
+        return input[0];
+    }
+    if (input[0] >= 0xc2 && input[0] <= 0xdf) {
+        value = input[0] & 0x1f;
+        length = 2;
+        minimum = 0x80;
+    } else if (input[0] >= 0xe0 && input[0] <= 0xef) {
+        value = input[0] & 0x0f;
+        length = 3;
+        minimum = 0x800;
+    } else if (input[0] >= 0xf0 && input[0] <= 0xf4) {
+        value = input[0] & 0x07;
+        length = 4;
+        minimum = 0x10000;
+    } else {
+        *text += 1;
+        return 0xfffd;
+    }
+    for (i = 1; i < length; ++i) {
+        if ((input[i] & 0xc0) != 0x80) {
+            *text += 1;
+            return 0xfffd;
+        }
+        value = (value << 6) | (input[i] & 0x3f);
+    }
+    if (value < minimum || (value >= 0xd800 && value <= 0xdfff) || value > 0x10ffff) {
+        *text += 1;
+        return 0xfffd;
+    }
+    *text += length;
+    return value;
+}
+
+static int font_glyph_metrics(Font *font, unsigned int character,
+                              FT_UInt *index, int *advance, int *loaded)
 {
     FontGlyphMetrics *cached = character < 128 ? &font->ascii[character] : NULL;
     unsigned int size = font->face->size->metrics.y_ppem;
@@ -41,6 +92,8 @@ static int font_glyph_metrics(Font *font, unsigned char character,
     if (cached && cached->valid) {
         *index = cached->index;
         *advance = cached->advance;
+        if (loaded)
+            *loaded = 0;
         return 0;
     }
     *index = FT_Get_Char_Index(font->face, character);
@@ -52,6 +105,8 @@ static int font_glyph_metrics(Font *font, unsigned char character,
         cached->advance = *advance;
         cached->valid = 1;
     }
+    if (loaded)
+        *loaded = 1;
     return 0;
 }
 
@@ -61,7 +116,8 @@ int font_text_width(Font *font, const char *text)
     while (*text) {
         FT_UInt index;
         int advance;
-        if (font_glyph_metrics(font, (unsigned char)*text++, &index, &advance) == 0)
+        unsigned int character = font_next_character(font, &text);
+        if (font_glyph_metrics(font, character, &index, &advance, NULL) == 0)
             width += advance;
     }
     return width;
@@ -69,13 +125,20 @@ int font_text_width(Font *font, const char *text)
 
 void font_text_widths(Font *font, const char *text, int *prefix)
 {
+    int width = 0;
     *prefix = 0;
     while (*text) {
+        const char *previous = text;
         FT_UInt index;
         int advance = 0;
-        (void)font_glyph_metrics(font, (unsigned char)*text++, &index, &advance);
-        prefix[1] = prefix[0] + advance;
-        ++prefix;
+        unsigned int character = font_next_character(font, &text);
+        (void)font_glyph_metrics(font, character, &index, &advance, NULL);
+        while (previous < text) {
+            ++previous;
+            prefix[1] = previous == text ? width + advance : width;
+            ++prefix;
+        }
+        width += advance;
     }
 }
 
@@ -152,8 +215,10 @@ static void draw_text_internal(Display *display, Buffer *buffer, Font *font,
     while (*text) {
         FT_UInt glyph;
         int advance;
-        if (font_glyph_metrics(font, (unsigned char)*text++, &glyph, &advance) != 0 ||
-            FT_Load_Glyph(face, glyph, FT_LOAD_DEFAULT) != 0)
+        int loaded = 0;
+        unsigned int character = font_next_character(font, &text);
+        if (font_glyph_metrics(font, character, &glyph, &advance, &loaded) != 0 ||
+            (!loaded && FT_Load_Glyph(face, glyph, FT_LOAD_DEFAULT) != 0))
             continue;
         if (bold)
             FT_GlyphSlot_Embolden(face->glyph);

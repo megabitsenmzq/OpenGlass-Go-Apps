@@ -40,12 +40,15 @@ typedef struct {
     FT_Library library;
     FT_Face face;
     unsigned int glyph_size;
+    int utf8;
+    char path[512];
     FontGlyphMetrics ascii[128];
 } Font;
 
 int display_wait_for_flip(Display *display);
 int font_open(Font *font, const char *path, int pixel_size);
 void font_close(Font *font);
+int font_centered_baseline(const Font *font, int box_y, int box_height);
 int font_text_width(Font *font, const char *text);
 void font_text_widths(Font *font, const char *text, int *prefix);
 void draw_rect(Display *display, Buffer *buffer, int x, int y,

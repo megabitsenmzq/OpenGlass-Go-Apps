@@ -101,4 +101,8 @@ void normalize_button_command(char *command, int button_reversed)
         strcpy(command, "NEXT");
     else if (strcmp(command, "NEXT") == 0)
         strcpy(command, "PREV");
+    else if (strcmp(command, "LOGD") == 0)
+        strcpy(command, "BBTN");
+    else if (strcmp(command, "BBTN") == 0)
+        strcpy(command, "LOGD");
 }

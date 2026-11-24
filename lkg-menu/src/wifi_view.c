@@ -64,27 +64,25 @@ void wifi_view_draw_network_row(Display *display, Font *font, const DepthEffect 
     int active = row == selected && interactive;
     Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
     uint32_t color = active ? 0xff101014 : 0xffd8d8d8;
-    int item_baseline;
+    int bar_height = WIFI_ROW_HEIGHT - 8;
+    int baseline;
     void (*draw_item_text)(Display *, Buffer *, Font *, const char *, int, int,
                            uint32_t) = active && depth->stereo ? draw_text_bold : draw_text;
     FT_Set_Pixel_Sizes(font->face, 0, 64);
-    item_baseline = (WIFI_ROW_HEIGHT -
-                     ((font->face->size->metrics.ascender >> 6) -
-                      (font->face->size->metrics.descender >> 6))) / 2 +
-                    (font->face->size->metrics.ascender >> 6);
+    baseline = font_centered_baseline(font, y, bar_height);
     if (row == 0) {
-        draw_back_arrow(display, buffer, margin / 3, y + WIFI_ROW_HEIGHT / 2, color);
-        draw_item_text(display, buffer, font, "Back", margin + 24, y + item_baseline, color);
+        draw_back_arrow(display, buffer, margin / 3, y + bar_height / 2, color);
+        draw_item_text(display, buffer, font, "Back", margin + 24, baseline, color);
     } else if (row == 1) {
         draw_item_text(display, buffer, font, scanning ? "Scanning..." : "Scan again",
-                       margin + 24, y + item_baseline, color);
+                       margin + 24, baseline, color);
     } else {
         int is_current = network->ssid_length == current_ssid_length &&
                          memcmp(network->ssid, current_ssid, network->ssid_length) == 0;
         if (is_current)
-            draw_checkmark(display, buffer, margin / 3, y + WIFI_ROW_HEIGHT / 2, color);
+            draw_checkmark(display, buffer, margin / 3, y + bar_height / 2, color);
         draw_text_fit(display, buffer, font, network->display_ssid, margin + 24,
-                               y + item_baseline, color, width - margin * 2 - 190,
+                               baseline, color, width - margin * 2 - 190,
                                active && depth->stereo);
         draw_signal_icon(display, buffer, width - margin - 50, y + 90, network->signal, color);
     }
@@ -108,11 +106,12 @@ void wifi_view_draw_details_row(Display *display, Font *font, const DepthEffect 
     if (row < 3) {
         const char *label = row == 0 ? "Back" : row == 1 ?
                             (connected ? "Disconnect" : "Connect") : "Forget";
+        int bar_height = WIFI_ROW_HEIGHT - 8;
         FT_Set_Pixel_Sizes(font->face, 0, 64);
         if (row == 0)
-            draw_back_arrow(display, buffer, margin / 3, y + WIFI_ROW_HEIGHT / 2, color);
+            draw_back_arrow(display, buffer, margin / 3, y + bar_height / 2, color);
         draw_item_text(display, buffer, font, label, margin + 24,
-                       y + WIFI_ROW_HEIGHT * 63 / 100, color);
+                       font_centered_baseline(font, y, bar_height), color);
     } else {
         int info = row - 3;
         FT_Set_Pixel_Sizes(font->face, 0, 32);
@@ -233,16 +232,12 @@ void wifi_view_draw_password_key(Display *display, Font *font, const DepthEffect
         draw_connect_icon(display, buffer, x + key_width / 2, y + key_height / 2, color);
     } else {
         int text_width;
-        int ascender;
-        int descender;
         int baseline;
         if (index == 40)
             label = layout == 2 ? "abc" : "#+=";
         FT_Set_Pixel_Sizes(font->face, 0, special ? 42 : 56);
         text_width = font_text_width(font, label);
-        ascender = font->face->size->metrics.ascender >> 6;
-        descender = font->face->size->metrics.descender >> 6;
-        baseline = y + (key_height - (ascender - descender)) / 2 + ascender;
+        baseline = font_centered_baseline(font, y, key_height);
         if (active && depth->stereo)
             draw_text_bold(display, buffer, font, label, x + (key_width - text_width) / 2,
                            baseline, color);
@@ -269,10 +264,7 @@ void wifi_view_draw_password_back(Display *display, Font *font, const DepthEffec
         draw_rect(display, buffer, 0, top, width, row_height, 0xffe8e8e8);
     draw_back_arrow(display, buffer, back_margin / 3, top + row_height / 2, color);
     FT_Set_Pixel_Sizes(font->face, 0, 64);
-    baseline = top + (row_height -
-                     ((font->face->size->metrics.ascender >> 6) -
-                      (font->face->size->metrics.descender >> 6))) / 2 +
-                    (font->face->size->metrics.ascender >> 6);
+    baseline = font_centered_baseline(font, top, row_height);
     if (active && depth->stereo)
         draw_text_bold(display, buffer, font, "Back", back_margin + 24, baseline, color);
     else
@@ -288,7 +280,8 @@ void wifi_view_draw_password_field(Display *display, Font *font, DepthLayer laye
     draw_rect(display, &layers[1].buffer, margin, 535, width - margin * 2, 140, 0xff303038);
     FT_Set_Pixel_Sizes(font->face, 0, 64);
     draw_text_fit(display, &layers[1].buffer, font, password,
-                           margin + 30, 627, 0xffffffff, width - margin * 2 - 60, 0);
+                  margin + 30, font_centered_baseline(font, 535, 140),
+                  0xffffffff, width - margin * 2 - 60, 0);
 }
 
 static void draw_clock_icon(Display *display, Buffer *buffer, int x, int y, uint32_t color)
@@ -324,11 +317,8 @@ void wifi_view_draw_operation(Display *display, Font *font, const DepthEffect *d
     int width = (int)display->mode.hdisplay;
     int height = (int)display->mode.vdisplay;
     int margin = width / 12;
-    int text_height;
     int y = (height - WIFI_ROW_HEIGHT) / 2;
     FT_Set_Pixel_Sizes(font->face, 0, 64);
-    text_height = (font->face->size->metrics.ascender >> 6) -
-                  (font->face->size->metrics.descender >> 6);
     draw_rect(display, buffer, 0, y, width, WIFI_ROW_HEIGHT, 0);
     draw_rect(display, &layers[1].buffer, 0, y, width, WIFI_ROW_HEIGHT, 0xffffffff);
     if (failed)
@@ -338,18 +328,14 @@ void wifi_view_draw_operation(Display *display, Font *font, const DepthEffect *d
         draw_clock_icon(display, buffer, margin / 3,
                         y + (WIFI_ROW_HEIGHT - 64) / 2, 0xff000000);
     draw_status_text(display, buffer, font, operation, margin + 24,
-                     y + (WIFI_ROW_HEIGHT - text_height) / 2 +
-                     (font->face->size->metrics.ascender >> 6), 0xff000000);
+                     font_centered_baseline(font, y, WIFI_ROW_HEIGHT), 0xff000000);
     if (failed && reason && reason[0]) {
         const int reason_height = 96;
         draw_rect(display, buffer, 0, y + WIFI_ROW_HEIGHT, width, reason_height, 0);
         draw_rect(display, &layers[1].buffer, 0, y + WIFI_ROW_HEIGHT, width, reason_height, 0xffffffff);
         FT_Set_Pixel_Sizes(font->face, 0, 48);
-        text_height = (font->face->size->metrics.ascender >> 6) -
-                      (font->face->size->metrics.descender >> 6);
         draw_text_fit(display, buffer, font, reason, margin + 24,
-                               y + WIFI_ROW_HEIGHT + (reason_height - text_height) / 2 +
-                               (font->face->size->metrics.ascender >> 6), 0xff000000,
-                               width - margin * 2, depth->stereo);
+                      font_centered_baseline(font, y + WIFI_ROW_HEIGHT, reason_height),
+                      0xff000000, width - margin * 2, depth->stereo);
     }
 }

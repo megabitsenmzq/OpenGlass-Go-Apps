@@ -58,17 +58,14 @@ void prerender_view_draw(Display *display, Font *font, DepthLayer layers[2],
     double overall = state->total ? (double)state->done / state->total : 1;
     char text[96];
     if (dirty.full) {
-        int ascender;
-        int descender;
+        const int bar_height = row_height - 8;
         int baseline;
         memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
         memset(layers[1].buffer.pixels, 0, layers[1].buffer.size);
         FT_Set_Pixel_Sizes(font->face, 0, 64);
-        ascender = font->face->size->metrics.ascender >> 6;
-        descender = font->face->size->metrics.descender >> 6;
-        baseline = top_margin + (row_height - (ascender - descender)) / 2 + ascender;
+        baseline = font_centered_baseline(font, top_margin, bar_height);
         draw_back_arrow(display, &layers[0].buffer, margin / 3,
-                        top_margin + row_height / 2, 0x101014);
+                        top_margin + bar_height / 2, 0x101014);
         draw_text(display, &layers[0].buffer, font, "Back",
                   margin + 24, baseline, 0x101014);
     }

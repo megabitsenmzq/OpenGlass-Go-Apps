@@ -35,20 +35,18 @@ void apps_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
     int active = row == selected && interactive;
     Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
     uint32_t color = active ? 0xff101014 : 0xffd8d8d8;
-    int item_baseline;
+    int bar_height = APPS_ROW_HEIGHT - 8;
+    int baseline;
     void (*draw_item_text)(Display *, Buffer *, Font *, const char *, int, int,
                            uint32_t) = active && depth->stereo ? draw_text_bold : draw_text;
     FT_Set_Pixel_Sizes(font->face, 0, 64);
-    item_baseline = (APPS_ROW_HEIGHT -
-                     ((font->face->size->metrics.ascender >> 6) -
-                      (font->face->size->metrics.descender >> 6))) / 2 +
-                    (font->face->size->metrics.ascender >> 6);
+    baseline = font_centered_baseline(font, y, bar_height);
     if (row == 0) {
-        draw_back_arrow(display, buffer, margin / 3, y + APPS_ROW_HEIGHT / 2, color);
-        draw_item_text(display, buffer, font, "Back", margin + 24, y + item_baseline, color);
+        draw_back_arrow(display, buffer, margin / 3, y + bar_height / 2, color);
+        draw_item_text(display, buffer, font, "Back", margin + 24, baseline, color);
     } else if (app && app->name) {
         draw_text_fit(display, buffer, font, app->name, margin + 24,
-                      y + item_baseline, color, width - margin * 2 - 24,
+                      baseline, color, width - margin * 2 - 24,
                       active && depth->stereo);
     }
 }
