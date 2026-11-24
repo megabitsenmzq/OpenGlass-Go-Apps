@@ -25,7 +25,7 @@ int test_menu_model(void)
     int page;
     int changed = 0;
     MenuState state = { .page = PAGE_MAIN, .slideshow_duration = 5, .button_reversed = 1 };
-    const int counts[] = { 6, 10, 2, 17, 3, 4, 3, 12, 11, 1 };
+    const int counts[] = { 6, 10, 2, 17, 3, 4, 3, 12, 12, 1 };
     for (page = PAGE_MAIN; page <= PAGE_FILE_MANAGER; ++page) {
         const char **items;
         int count;

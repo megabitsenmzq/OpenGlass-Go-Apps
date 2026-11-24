@@ -109,6 +109,7 @@ static int test_menu_semantics(Display *display, Font *font, DepthLayer layers[2
 {
     DepthEffect depth = {0};
     SystemInfo info = {
+        .version = "OpenGlass Go 1.1.0",
         .serial = "LKG-TEST01", .cpu = "4 x Cortex-A53", .memory = "2.0 GiB",
         .gpu = "Mali-G31", .display = "1440 x 2560", .disk = "16 GiB",
         .os = "Debian", .kernel = "6.18", .ssh = "lkg@lkg.local",
@@ -150,6 +151,12 @@ static int test_menu_semantics(Display *display, Font *font, DepthLayer layers[2
 
     text_op_count = 0;
     menu_view_draw_page(display, font, &depth, layers, PAGE_INFO, 0, 1, &info);
+    TEST_ASSERT(find_text("Version") >= 0);
+    i = find_text("OpenGlass Go 1.1.0");
+    TEST_ASSERT(i >= 0);
+    TEST_ASSERT(text_ops[i].size == 48);
+    i = find_text("Version");
+    TEST_ASSERT(text_ops[i].size == 32);
     TEST_ASSERT(find_text("Serial") >= 0);
     i = find_text("LKG-TEST01");
     TEST_ASSERT(i >= 0);

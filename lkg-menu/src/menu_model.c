@@ -39,7 +39,7 @@ static const char *settings_items[] = {
 };
 
 static const char *info_items[] = {
-    "Back", "Serial", "CPU", "Memory", "GPU", "Display", "Disk", "OS",
+    "Back", "Version", "Serial", "CPU", "Memory", "GPU", "Display", "Disk", "OS",
     "Kernel Version", "SSH", "IP Address"
 };
 
@@ -100,7 +100,8 @@ static const MenuItemRule settings_rules[] = {
 static const MenuItemRule info_rules[] = {
     RULE(ACTION_NONE, PAGE_SETTINGS, 9),
     NO_RULE, NO_RULE, NO_RULE, NO_RULE, NO_RULE,
-    NO_RULE, NO_RULE, NO_RULE, NO_RULE, NO_RULE
+    NO_RULE, NO_RULE, NO_RULE, NO_RULE, NO_RULE,
+    NO_RULE
 };
 
 static const MenuItemRule clear_cache_rules[] = {

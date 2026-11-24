@@ -5,6 +5,7 @@
 #include "menu_model.h"
 
 typedef struct {
+    char version[128];
     char serial[128];
     char cpu[128];
     char memory[128];

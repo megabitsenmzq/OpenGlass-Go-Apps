@@ -19,15 +19,16 @@ static void draw_menu_item(Display *display, Font *font, const DepthEffect *dept
     if (page != PAGE_MAIN && index == 0)
         draw_back_arrow(display, item_buffer, margin / 3, y + bar_height / 2, color);
     if (page == PAGE_INFO && index > 0) {
-        const char *value = index == 1 ? info->serial :
-                            index == 2 ? info->cpu :
-                            index == 3 ? info->memory :
-                            index == 4 ? info->gpu :
-                            index == 5 ? info->display :
-                            index == 6 ? info->disk :
-                            index == 7 ? info->os :
-                            index == 8 ? info->kernel :
-                            index == 9 ? info->ssh : info->ip;
+        const char *value = index == 1 ? info->version :
+                            index == 2 ? info->serial :
+                            index == 3 ? info->cpu :
+                            index == 4 ? info->memory :
+                            index == 5 ? info->gpu :
+                            index == 6 ? info->display :
+                            index == 7 ? info->disk :
+                            index == 8 ? info->os :
+                            index == 9 ? info->kernel :
+                            index == 10 ? info->ssh : info->ip;
         FT_Set_Pixel_Sizes(font->face, 0, 32);
         draw_item_text(display, item_buffer, font, item, margin + 24,
                        y + row_height * 38 / 100, color);

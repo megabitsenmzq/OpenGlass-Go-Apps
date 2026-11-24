@@ -355,6 +355,23 @@ static int read_json_string(const char *path, const char *key, char *value, size
     return 0;
 }
 
+static int read_unquoted_key_value(const char *path, const char *key,
+                                   char *out, size_t out_size)
+{
+    char raw[128];
+    size_t length;
+    const char *value = raw;
+    if (read_key_value(path, key, raw, sizeof(raw)) != 0 || out_size == 0)
+        return -1;
+    length = strlen(raw);
+    if (length >= 2 && raw[0] == '"' && raw[length - 1] == '"') {
+        raw[length - 1] = '\0';
+        value = raw + 1;
+    }
+    snprintf(out, out_size, "%s", value);
+    return 0;
+}
+
 static void collect_system_info(Display *display, SystemInfo *info)
 {
     char part[64];
@@ -362,12 +379,17 @@ static void collect_system_info(Display *display, SystemInfo *info)
     char available[64];
     char driver[64];
     char compatible[128];
-    char os[128];
     long cores = sysconf(_SC_NPROCESSORS_ONLN);
     struct statvfs disk_status;
     struct utsname kernel_info;
     struct ifaddrs *addresses = NULL;
     struct ifaddrs *address;
+
+    if (read_unquoted_key_value("/etc/openglass-release", "PRETTY_NAME",
+                                info->version, sizeof(info->version)) != 0 &&
+        read_unquoted_key_value("/etc/openglass-release", "VERSION",
+                                info->version, sizeof(info->version)) != 0)
+        snprintf(info->version, sizeof(info->version), "Unavailable");
 
     if (read_json_string("/run/lkg/visual.json", "serial", info->serial,
                          sizeof(info->serial)) != 0)
@@ -407,17 +429,9 @@ static void collect_system_info(Display *display, SystemInfo *info)
                  (double)disk_status.f_bavail * disk_status.f_frsize / 1073741824.0);
     else
         snprintf(info->disk, sizeof(info->disk), "Unavailable");
-    if (read_key_value("/etc/os-release", "PRETTY_NAME", os, sizeof(os)) == 0) {
-        size_t length = strlen(os);
-        const char *name = os;
-        if (length >= 2 && os[0] == '"' && os[length - 1] == '"') {
-            os[length - 1] = '\0';
-            name = os + 1;
-        }
-        snprintf(info->os, sizeof(info->os), "%s", name);
-    } else {
+    if (read_unquoted_key_value("/etc/os-release", "PRETTY_NAME",
+                                info->os, sizeof(info->os)) != 0)
         snprintf(info->os, sizeof(info->os), "Unavailable");
-    }
     if (uname(&kernel_info) == 0)
         snprintf(info->kernel, sizeof(info->kernel), "%s", kernel_info.release);
     else
