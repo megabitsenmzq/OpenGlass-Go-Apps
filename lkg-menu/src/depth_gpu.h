@@ -19,6 +19,11 @@ int depth_gpu_gallery_region(DepthGpu *gpu, Display *display, const DepthEffect 
                              const DepthLayer *layers, const uint8_t *const pixels[2],
                              int x, int y, int width, int height,
                              int clip_x, int clip_y, int clip_width, int clip_height, int upload);
+int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEffect *effect,
+                                  const DepthLayer *layers,
+                                  const DepthAnimRect *first, const DepthAnimRect *second,
+                                  int clip_x, int clip_y, int clip_width, int clip_height,
+                                  int bar_top, int bar_bottom);
 int depth_gpu_gallery_bake_base(DepthGpu *gpu, Display *display, const DepthEffect *effect,
                                 const DepthLayer *layers, const uint8_t *const pixels[2],
                                 int band);

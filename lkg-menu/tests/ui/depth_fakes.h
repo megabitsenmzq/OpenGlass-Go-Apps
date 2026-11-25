@@ -8,6 +8,8 @@ typedef struct {
     int force_full;
     uint64_t revision;
     int begin_calls;
+    int upload_calls;
+    int anim_region_calls;
     int cached_calls;
     int region_calls;
     int present_calls;
@@ -20,6 +22,14 @@ typedef struct {
     int last_y;
     int last_width;
     int last_height;
+    int last_bar_top;
+    int last_bar_bottom;
+    int last_clip_x;
+    int last_clip_y;
+    int last_clip_width;
+    int last_clip_height;
+    float last_first_disparity;
+    float last_second_disparity;
     uint32_t packed_first[2];
     uint64_t committed_key;
 } DepthFake;

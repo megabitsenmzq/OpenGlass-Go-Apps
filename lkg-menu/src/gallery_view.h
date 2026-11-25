@@ -20,6 +20,10 @@ void gallery_view_draw_text_start(Display *display, Buffer *buffer, Font *font,
 void gallery_view_draw_cell(Display *display, Font *font, DepthLayer layers[2],
                             int cell, int selected, GalleryItem *item,
                             int special, int cursor);
+void gallery_view_draw_cell_anim(Display *display, Font *font, DepthLayer layers[2],
+                                 int cell, int selected, GalleryItem *item);
+void gallery_view_draw_special_anim(Display *display, DepthLayer layers[2],
+                                    int active_slot, int sinking_slot);
 void gallery_view_move_cell(Display *display, Font *font, DepthLayer layers[2],
                             int cell, int selected, GalleryItem *item);
 int gallery_view_show_error(Display *display, DepthEffect *depth, DepthLayer layers[2]);

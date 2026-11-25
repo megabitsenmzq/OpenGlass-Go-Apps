@@ -43,7 +43,30 @@ typedef struct {
     int bake_cell;
     int bake_slot;
     int bake_band;
+    unsigned int gpu_dirty_mask;
 } GalleryCache;
+
+typedef struct {
+    int active;
+    double started;
+    double duration;
+    int old_cell;
+    int old_slot;
+    int new_cell;
+    int new_slot;
+    float old_start_disparity;
+    float new_start_disparity;
+    float cur_old_disparity;
+    float cur_new_disparity;
+    DepthAnimRect old_rect;
+    DepthAnimRect new_rect;
+    int clip_count;
+    int clip_x[2];
+    int clip_y[2];
+    int clip_w[2];
+    int clip_h[2];
+    int frames;
+} GalleryAnim;
 
 typedef struct {
     GalleryItem *items;
@@ -51,6 +74,7 @@ typedef struct {
     char directory[PATH_MAX];
     DepthEffect *depth;
     GalleryCache cache;
+    GalleryAnim anim;
     int page;
     int cursor;
     int allow_cache_bake;

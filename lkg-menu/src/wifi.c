@@ -394,14 +394,13 @@ int wifi_run(Display *display, Font *font, const DepthEffect *depth,
                 draw_result = wifi_ui_draw_operation(&menu);
             else if (menu.page != WIFI_PAGE_PASSWORD)
                 draw_result = wifi_ui_draw_current_page(&menu);
-            else if (changed == PASSWORD_REDRAW_FOCUS)
-                draw_result = wifi_ui_draw_password_cursor(&menu, cursor_previous, 0);
+            else if (changed == PASSWORD_REDRAW_FOCUS || changed == PASSWORD_REDRAW_BACK)
+                draw_result = wifi_ui_draw_password_cursor(&menu, cursor_previous,
+                                                           cursor_previous_back);
             else if (changed == PASSWORD_REDRAW_PASSWORD)
                 draw_result = wifi_ui_update_password_field(&menu);
             else if (changed == PASSWORD_REDRAW_KEYBOARD)
                 draw_result = wifi_ui_update_password_keyboard(&menu);
-            else if (changed == PASSWORD_REDRAW_BACK)
-                draw_result = wifi_ui_draw_password_cursor(&menu, cursor_previous, 1);
             else
                 draw_result = wifi_ui_draw_password(&menu);
             if (draw_result != 0) {
@@ -409,6 +408,11 @@ int wifi_run(Display *display, Font *font, const DepthEffect *depth,
                 break;
             }
             changed = 0;
+        } else if (wifi_ui_anim_active(&menu)) {
+            if (wifi_ui_anim_step(&menu) != 0) {
+                result = -1;
+                break;
+            }
         }
         if (menu.page == WIFI_PAGE_PASSWORD) {
             UsbKeyEvent key_event = usb_keyboard_next(keyboard);
@@ -427,7 +431,8 @@ int wifi_run(Display *display, Font *font, const DepthEffect *depth,
         }
         if (event == 0)
             event = serial_parser_next_with_fd(serial_fd, &parser, command, sizeof(command),
-                                               100, keyboard->fd);
+                                               wifi_ui_anim_active(&menu) ? 0 : 100,
+                                               keyboard->fd);
         if (event < 0) {
             result = -1;
             break;

@@ -14,6 +14,9 @@ int apps_view_row_y(const Display *display, int visible_rows, int row, int scrol
 void apps_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
                         DepthLayer layers[2], int row, int y, int selected,
                         int interactive, const ExternalApp *app);
+void apps_view_draw_row_anim(Display *display, Font *font, const DepthEffect *depth,
+                             DepthLayer layers[2], int row, int y, int active,
+                             const ExternalApp *app);
 
 void apps_view_draw_text_input(Display *display, Font *font, const DepthEffect *depth,
                                DepthLayer layers[2], const char *title,

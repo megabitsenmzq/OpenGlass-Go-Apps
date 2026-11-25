@@ -1,9 +1,11 @@
 #define _GNU_SOURCE
 #include "apps_host.h"
 #include "apps_view.h"
+#include "depth_anim.h"
 #include "depth_frame.h"
 #include "password_keyboard.h"
 #include "serial_parser.h"
+#include "wifi_ui.h"
 #include "wifi_view.h"
 
 #include <errno.h>
@@ -440,6 +442,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
 {
     PasswordKeyboardState kb;
     DepthCacheState modal_cache;
+    DepthAnim modal_anim;
     int changed = PASSWORD_REDRAW_FULL;
     int previous_key = 25;
     int previous_back = 1;
@@ -447,6 +450,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
 
     memset(&kb, 0, sizeof(kb));
     memset(&modal_cache, 0, sizeof(modal_cache));
+    memset(&modal_anim, 0, sizeof(modal_anim));
     kb.layout = 0;
     kb.key_selected = 25;
     kb.back_selected = 1;
@@ -466,11 +470,28 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
 
         if (changed) {
             int draw_result = 0;
-            if (changed == PASSWORD_REDRAW_FOCUS) {
-                draw_result = modal_draw_cursor(session, &modal_cache, &kb, previous_key, 0);
-            } else if (changed == PASSWORD_REDRAW_BACK) {
-                draw_result = modal_draw_cursor(session, &modal_cache, &kb, previous_key, 1);
+            if (changed == PASSWORD_REDRAW_FOCUS || changed == PASSWORD_REDRAW_BACK) {
+                int old_id = previous_back ? WIFI_PASSWORD_ANIM_BACK_ID : previous_key;
+                int new_id = kb.back_selected ? WIFI_PASSWORD_ANIM_BACK_ID : kb.key_selected;
+                int anim_result = wifi_ui_password_anim_begin(session->display,
+                                                              session->menu_font,
+                                                              session->depth,
+                                                              session->modal_layers,
+                                                              &modal_cache, &modal_anim,
+                                                              kb.layout, old_id, new_id);
+                if (anim_result < 0)
+                    return -1;
+                if (anim_result == 0) {
+                    wifi_ui_password_anim_cancel(session->display, session->menu_font,
+                                                 session->depth, session->modal_layers,
+                                                 &modal_cache, &modal_anim, kb.layout);
+                    draw_result = modal_draw_cursor(session, &modal_cache, &kb, previous_key,
+                                                    changed == PASSWORD_REDRAW_BACK);
+                }
             } else if (changed == PASSWORD_REDRAW_PASSWORD) {
+                wifi_ui_password_anim_cancel(session->display, session->menu_font,
+                                             session->depth, session->modal_layers,
+                                             &modal_cache, &modal_anim, kb.layout);
                 wifi_view_draw_password_field(session->display, session->menu_font,
                                               session->modal_layers, kb.password);
                 draw_result = modal_present_region(session, &modal_cache,
@@ -478,6 +499,9 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
             } else if (changed == PASSWORD_REDRAW_KEYBOARD) {
                 int top, bottom, kx, kw, kh, i;
                 int width = (int)session->display->mode.hdisplay;
+                wifi_ui_password_anim_cancel(session->display, session->menu_font,
+                                             session->depth, session->modal_layers,
+                                             &modal_cache, &modal_anim, kb.layout);
                 wifi_view_key_geometry(session->display, 0, &kx, &top, &kw, &kh);
                 wifi_view_key_geometry(session->display, WIFI_KEYBOARD_KEYS - 1,
                                        &kx, &bottom, &kw, &kh);
@@ -495,6 +519,7 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
                                                    0, top, width, bottom - top);
             } else {
                 DepthFrame frame;
+                modal_anim.active = 0;
                 if (depth_frame_begin(&frame, session->display, session->depth,
                                       session->modal_layers, &modal_cache, 0, 1) != 0)
                     return -1;
@@ -508,6 +533,11 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
             if (draw_result != 0)
                 return -1;
             changed = 0;
+        } else if (modal_anim.active) {
+            if (wifi_ui_password_anim_step(session->display, session->menu_font,
+                                           session->depth, session->modal_layers,
+                                           &modal_cache, &modal_anim, kb.layout) != 0)
+                return -1;
         }
 
         key_event = usb_keyboard_next(session->keyboard);
@@ -541,7 +571,8 @@ static int run_text_input_modal(AppHostSession *session, const char *title,
         }
 
         event = serial_parser_next_with_fd(session->serial_fd, session->parser,
-                                           command, sizeof(command), 100,
+                                           command, sizeof(command),
+                                           modal_anim.active ? 0 : 100,
                                            session->keyboard->fd);
         if (event < 0)
             return -1;
@@ -644,7 +675,8 @@ static int handle_client_message(AppHostSession *session)
             return send_reply(session->sock_fd, LKG_MSG_TEXT_INPUT_REPLY, header.seq,
                               &reply, sizeof(reply), NULL, 0);
         }
-        if (header.type == LKG_MSG_SYNC || header.type == LKG_MSG_PRESENT) {
+        if (header.type == LKG_MSG_SYNC || header.type == LKG_MSG_PRESENT ||
+            header.type == LKG_MSG_ANIM_PRESENT) {
             LkgReplyPayload reply;
             reply.status = -1;
             return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
@@ -816,6 +848,106 @@ static int handle_client_message(AppHostSession *session)
         reply.status = depth_frame_present(&frame);
         if (reply.status == 0)
             session->frame_initialized = 1;
+        return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
+                          &reply, sizeof(reply), NULL, 0);
+    }
+    case LKG_MSG_UPLOAD_RECT: {
+        LkgUploadRectPayload req;
+        int screen_w = (int)session->display->mode.hdisplay;
+        int screen_h = (int)session->display->mode.vdisplay;
+        int rx0, ry0, rx1, ry1;
+        if (header.length < sizeof(req))
+            return -1;
+        memcpy(&req, payload, sizeof(req));
+        rx0 = req.x < 0 ? 0 : req.x;
+        ry0 = req.y < 0 ? 0 : req.y;
+        rx1 = (long long)req.x + req.width > screen_w ? screen_w : (int)((long long)req.x + req.width);
+        ry1 = (long long)req.y + req.height > screen_h ? screen_h : (int)((long long)req.y + req.height);
+        if (session->frame_initialized &&
+            depth_gallery_direct_upload(session->display, session->depth) &&
+            rx1 > rx0 && ry1 > ry0) {
+            int layer;
+            for (layer = 0; layer < 2; ++layer)
+                depth_layer_finish_area(&session->app_layers[layer],
+                                        rx0, ry0, rx1 - rx0, ry1 - ry0,
+                                        screen_w, screen_h);
+            (void)depth_gallery_upload(session->display, session->depth,
+                                       session->app_layers,
+                                       rx0, ry0, rx1 - rx0, ry1 - ry0);
+        }
+        return 0;
+    }
+    case LKG_MSG_ANIM_PRESENT: {
+        LkgAnimPresentPayload req;
+        LkgReplyPayload reply;
+        DepthAnimRect anim_rects[2];
+        const DepthAnimRect *first = NULL;
+        const DepthAnimRect *second = NULL;
+        int screen_w = (int)session->display->mode.hdisplay;
+        int screen_h = (int)session->display->mode.vdisplay;
+        size_t expected;
+        uint32_t i;
+        if (header.length < sizeof(req))
+            return -1;
+        memcpy(&req, payload, sizeof(req));
+        if (req.rect_count > 2 || req.clip_count == 0 || req.clip_count > 2) {
+            reply.status = -1;
+            return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
+                              &reply, sizeof(reply), NULL, 0);
+        }
+        expected = sizeof(req) + (size_t)req.rect_count * sizeof(LkgAnimRect) +
+                   (size_t)req.clip_count * sizeof(LkgClipRect);
+        if (header.length < expected || !session->frame_initialized ||
+            !session->depth->stereo ||
+            !depth_gallery_direct_upload(session->display, session->depth)) {
+            reply.status = -1;
+            return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
+                              &reply, sizeof(reply), NULL, 0);
+        }
+        for (i = 0; i < req.rect_count; ++i) {
+            LkgAnimRect r;
+            memcpy(&r, payload + sizeof(req) + (size_t)i * sizeof(r), sizeof(r));
+            anim_rects[i].x0 = r.x0;
+            anim_rects[i].y0 = r.y0;
+            anim_rects[i].x1 = r.x1;
+            anim_rects[i].y1 = r.y1;
+            anim_rects[i].disparity = r.disparity;
+        }
+        if (req.rect_count > 0)
+            first = &anim_rects[0];
+        if (req.rect_count > 1)
+            second = &anim_rects[1];
+        reply.status = 0;
+        for (i = 0; i < req.clip_count; ++i) {
+            LkgClipRect c;
+            int cx0, cy0, cx1, cy1;
+            memcpy(&c, payload + sizeof(req) +
+                   (size_t)req.rect_count * sizeof(LkgAnimRect) +
+                   (size_t)i * sizeof(c), sizeof(c));
+            cx0 = c.x < 0 ? 0 : c.x;
+            cy0 = c.y < 0 ? 0 : c.y;
+            cx1 = (long long)c.x + c.width > screen_w ? screen_w : (int)((long long)c.x + c.width);
+            cy1 = (long long)c.y + c.height > screen_h ? screen_h : (int)((long long)c.y + c.height);
+            if (cx1 > cx0 && cy1 > cy0) {
+                if (depth_gallery_anim_region(session->display, session->depth,
+                                              session->app_layers, first, second,
+                                              cx0, cy0, cx1 - cx0, cy1 - cy0,
+                                              req.bar_top, req.bar_bottom) != 0) {
+                    reply.status = -1;
+                    break;
+                }
+            }
+        }
+        if (reply.status == 0 && req.present) {
+            if (depth_gallery_present(session->display, session->depth) != 0) {
+                reply.status = -1;
+            } else {
+                session->last_bar_top = req.bar_top;
+                session->last_bar_bottom = req.bar_bottom;
+            }
+        }
+        if (reply.status == 0 && req.commit_cache)
+            depth_cache_commit(session->depth, &session->cache_state, 1);
         return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
                           &reply, sizeof(reply), NULL, 0);
     }
@@ -1249,6 +1381,164 @@ stop_session:
     return 0;
 }
 
+static int apps_visible_rows(const ExternalAppList *list, int scroll)
+{
+    int count = (int)list->count + 1;
+    int visible_rows = count - scroll;
+    if (visible_rows > APPS_VISIBLE_ROWS)
+        visible_rows = APPS_VISIBLE_ROWS;
+    return visible_rows;
+}
+
+static int apps_anim_settle_row(Display *display, Font *font, const DepthEffect *depth,
+                                DepthLayer layers[2], const ExternalAppList *list,
+                                int scroll, int row, int selected)
+{
+    int width = (int)display->mode.hdisplay;
+    int visible_rows = apps_visible_rows(list, scroll);
+    int y = apps_view_row_y(display, visible_rows, row, scroll);
+    draw_rect(display, &layers[0].buffer, 0, y, width, APPS_ROW_HEIGHT, 0);
+    draw_rect(display, &layers[1].buffer, 0, y, width, APPS_ROW_HEIGHT, 0);
+    apps_view_draw_row(display, font, depth, layers, row, y, selected, 1,
+                       row >= 1 ? &list->items[row - 1] : NULL);
+    return depth_anim_upload_rect(display, depth, layers, 0, y, width, APPS_ROW_HEIGHT);
+}
+
+static int apps_anim_finish(Display *display, Font *font, const DepthEffect *depth,
+                            DepthLayer layers[2], DepthCacheState *cache_state,
+                            DepthAnim *anim, const ExternalAppList *list,
+                            int scroll, int selected)
+{
+    if (!anim->active)
+        return 0;
+    if (apps_anim_settle_row(display, font, depth, layers, list,
+                             scroll, anim->old_id, selected) != 0)
+        return -1;
+    depth_cache_commit(depth, cache_state, anim->content_key);
+    anim->active = 0;
+    return 0;
+}
+
+static void apps_anim_cancel(Display *display, Font *font, const DepthEffect *depth,
+                             DepthLayer layers[2], DepthCacheState *cache_state,
+                             DepthAnim *anim, const ExternalAppList *list,
+                             int scroll, int cached_scroll, int selected)
+{
+    if (!anim->active)
+        return;
+    if (cached_scroll == scroll && cache_state->initialized && anim->content_key == 1) {
+        int i;
+        if (apps_anim_settle_row(display, font, depth, layers, list,
+                                 scroll, anim->old_id, selected) == 0) {
+            anim->new_rect.disparity = depth->front_disparity;
+            for (i = 0; i < anim->clip_count; ++i) {
+                if (depth_gallery_anim_region(display, depth, layers,
+                                              &anim->new_rect, NULL,
+                                              anim->clip_x[i], anim->clip_y[i],
+                                              anim->clip_w[i], anim->clip_h[i],
+                                              anim->bar_top, anim->bar_bottom) != 0) {
+                    anim->active = 0;
+                    return;
+                }
+            }
+            depth_cache_commit(depth, cache_state, 1);
+        }
+    }
+    anim->active = 0;
+}
+
+static int apps_anim_step(Display *display, Font *font, const DepthEffect *depth,
+                          DepthLayer layers[2], DepthCacheState *cache_state,
+                          DepthAnim *anim, const ExternalAppList *list,
+                          int scroll, int selected)
+{
+    int finished = 0;
+    if (!anim->active)
+        return 0;
+    if (depth_anim_step(anim, display, depth, layers, "Apps", &finished) != 0)
+        return -1;
+    if (finished)
+        return apps_anim_finish(display, font, depth, layers, cache_state,
+                                anim, list, scroll, selected);
+    return 0;
+}
+
+static int apps_anim_begin(Display *display, Font *font, const DepthEffect *depth,
+                           DepthLayer layers[2], DepthCacheState *cache_state,
+                           DepthAnim *anim, const ExternalAppList *list,
+                           int selected, int scroll,
+                           int *cached_selected, int *cached_scroll, int force_full)
+{
+    int width = (int)display->mode.hdisplay;
+    int old_row = *cached_selected;
+    int new_row = selected;
+    int visible_rows;
+    int old_y;
+    int new_y;
+    float old_start = depth->front_disparity;
+    float new_start = depth->back_disparity;
+    DepthAnimRect old_rect;
+    DepthAnimRect new_rect;
+    if (!depth->stereo || !depth_gallery_direct_upload(display, depth) ||
+        force_full || *cached_scroll != scroll || old_row < 0 || old_row == new_row ||
+        (!anim->active ? depth_cache_needs_full(depth, cache_state, 1)
+                       : (!cache_state->initialized || anim->content_key != 1)))
+        return 0;
+    visible_rows = apps_visible_rows(list, scroll);
+    if (anim->active) {
+        DepthAnim prev = *anim;
+        if (old_row == prev.new_id)
+            old_start = prev.cur_new_disparity;
+        if (new_row == prev.old_id)
+            new_start = prev.cur_old_disparity;
+        if (prev.old_id != old_row && prev.old_id != new_row) {
+            int cx, cy, cw, ch;
+            if (apps_anim_settle_row(display, font, depth, layers, list,
+                                     scroll, prev.old_id, new_row) != 0)
+                return -1;
+            depth_anim_clip_rect(display, depth,
+                                 prev.old_rect.x0, prev.old_rect.y0,
+                                 prev.old_rect.x1 - prev.old_rect.x0,
+                                 prev.old_rect.y1 - prev.old_rect.y0,
+                                 &cx, &cy, &cw, &ch);
+            if (cw > 0 && ch > 0 &&
+                depth_gallery_anim_region(display, depth, layers, NULL, NULL,
+                                          cx, cy, cw, ch, 0, 0) != 0)
+                return -1;
+        }
+        anim->active = 0;
+    }
+    old_y = apps_view_row_y(display, visible_rows, old_row, scroll);
+    new_y = apps_view_row_y(display, visible_rows, new_row, scroll);
+    old_rect.x0 = 0;
+    old_rect.y0 = old_y;
+    old_rect.x1 = width;
+    old_rect.y1 = old_y + APPS_ROW_HEIGHT;
+    old_rect.disparity = 0.0f;
+    new_rect.x0 = 0;
+    new_rect.y0 = new_y;
+    new_rect.x1 = width;
+    new_rect.y1 = new_y + APPS_ROW_HEIGHT;
+    new_rect.disparity = 0.0f;
+    apps_view_draw_row_anim(display, font, depth, layers, old_row, old_y, 0,
+                            old_row >= 1 ? &list->items[old_row - 1] : NULL);
+    apps_view_draw_row_anim(display, font, depth, layers, new_row, new_y, 1,
+                            new_row >= 1 ? &list->items[new_row - 1] : NULL);
+    if (depth_anim_upload_rect(display, depth, layers, 0, old_y, width, APPS_ROW_HEIGHT) != 0 ||
+        depth_anim_upload_rect(display, depth, layers, 0, new_y, width, APPS_ROW_HEIGHT) != 0)
+        return -1;
+    depth_anim_start(anim, display, depth, old_row, new_row,
+                     &old_rect, &new_rect,
+                     new_y, new_y + APPS_ROW_HEIGHT - 8,
+                     1, old_start, new_start);
+    if (apps_anim_step(display, font, depth, layers, cache_state,
+                       anim, list, scroll, new_row) != 0)
+        return -1;
+    *cached_selected = new_row;
+    *cached_scroll = scroll;
+    return 1;
+}
+
 static int draw_apps_page(Display *display, Font *font, const DepthEffect *depth,
                           DepthLayer layers[2], DepthCacheState *cache_state,
                           const ExternalAppList *list, int selected, int scroll,
@@ -1324,6 +1614,7 @@ int apps_run(Display *display, Font *font, DepthEffect *depth,
     ExternalAppList list;
     SerialParser parser;
     DepthCacheState cache_state;
+    DepthAnim anim;
     int selected = 0;
     int scroll = 0;
     int cached_selected = -1;
@@ -1335,6 +1626,7 @@ int apps_run(Display *display, Font *font, DepthEffect *depth,
     memset(&list, 0, sizeof(list));
     memset(&parser, 0, sizeof(parser));
     memset(&cache_state, 0, sizeof(cache_state));
+    memset(&anim, 0, sizeof(anim));
     if (apps_scan_directory(&list, apps_dir ? apps_dir : APPS_ROOT) != 0 || list.count == 0) {
         apps_list_free(&list);
         return 0;
@@ -1349,14 +1641,32 @@ int apps_run(Display *display, Font *font, DepthEffect *depth,
         int count = (int)list.count + 1;
 
         if (changed) {
-            if (draw_apps_page(display, font, depth, layers, &cache_state,
-                               &list, selected, scroll, &cached_selected,
-                               &cached_scroll, force_full) != 0) {
+            int anim_result = apps_anim_begin(display, font, depth, layers, &cache_state,
+                                              &anim, &list, selected, scroll,
+                                              &cached_selected, &cached_scroll,
+                                              force_full);
+            if (anim_result < 0) {
                 result = -1;
                 break;
             }
+            if (anim_result == 0) {
+                apps_anim_cancel(display, font, depth, layers, &cache_state, &anim,
+                                 &list, scroll, cached_scroll, selected);
+                if (draw_apps_page(display, font, depth, layers, &cache_state,
+                                   &list, selected, scroll, &cached_selected,
+                                   &cached_scroll, force_full) != 0) {
+                    result = -1;
+                    break;
+                }
+            }
             changed = 0;
             force_full = 0;
+        } else if (anim.active) {
+            if (apps_anim_step(display, font, depth, layers, &cache_state, &anim,
+                               &list, scroll, selected) != 0) {
+                result = -1;
+                break;
+            }
         }
 
         event = usb_keyboard_next_command(keyboard, command, sizeof(command));
@@ -1364,7 +1674,9 @@ int apps_run(Display *display, Font *font, DepthEffect *depth,
             usb_keyboard_prepare_command(command, button_reversed);
         if (event == 0)
             event = serial_parser_next_with_fd(serial_fd, &parser, command,
-                                               sizeof(command), 100, keyboard->fd);
+                                               sizeof(command),
+                                               anim.active ? 0 : 100,
+                                               keyboard->fd);
         if (event < 0) {
             result = -1;
             break;
@@ -1407,6 +1719,7 @@ int apps_run(Display *display, Font *font, DepthEffect *depth,
                 int launch_res;
                 snprintf(launched_dir, sizeof(launched_dir), "%s",
                          list.items[selected - 1].dir_name);
+                anim.active = 0;
                 launch_res = launch_external_app(display, font, depth, layers,
                                                  serial_fd, keyboard, &parser,
                                                  button_reversed, &list.items[selected - 1]);

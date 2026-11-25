@@ -6,7 +6,7 @@ SOURCES := test_ui.c $(ROOT)/src/ui.c $(ROOT)/src/menu_view.c $(ROOT)/src/menu_m
 	$(ROOT)/src/wifi_view.c $(ROOT)/src/wifi_model.c $(ROOT)/src/password_keyboard.c \
 	$(ROOT)/src/gallery_view.c $(ROOT)/src/prerender_view.c $(ROOT)/src/file_manager_view.c \
 	$(ROOT)/src/apps_view.c $(ROOT)/src/apps_scan.c \
-	$(ROOT)/src/depth_frame.c $(ROOT)/src/usb_keyboard.c $(ROOT)/src/text_fit.c depth_fakes.c test_depth_frame.c \
+	$(ROOT)/src/depth_anim.c $(ROOT)/src/depth_frame.c $(ROOT)/src/usb_keyboard.c $(ROOT)/src/text_fit.c depth_fakes.c test_depth_frame.c \
 	test_usb_keyboard.c
 PACKAGES := freetype2 libdrm libqrencode
 

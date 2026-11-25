@@ -31,6 +31,10 @@ typedef struct {
     int saw_sync;
     int saw_present;
     int saw_present_rects;
+    int saw_upload_rect;
+    int saw_anim_present;
+    int32_t last_anim_bar_top;
+    int32_t last_anim_bar_bottom;
     uint32_t last_rect_color;
     float last_front_depth;
     float last_back_depth;
@@ -246,6 +250,21 @@ static void *mock_host_thread(void *arg)
                 host->failed = 1;
                 break;
             }
+        } else if (hdr.type == LKG_MSG_UPLOAD_RECT) {
+            ++host->saw_upload_rect;
+        } else if (hdr.type == LKG_MSG_ANIM_PRESENT) {
+            LkgAnimPresentPayload p;
+            LkgReplyPayload reply;
+            memcpy(&p, buf, sizeof(p));
+            host->last_anim_bar_top = p.bar_top;
+            host->last_anim_bar_bottom = p.bar_bottom;
+            ++host->saw_anim_present;
+            reply.status = 0;
+            if (mock_send_frame(host->host_fd, LKG_MSG_REPLY, hdr.seq,
+                                &reply, sizeof(reply), NULL, 0) != 0) {
+                host->failed = 1;
+                break;
+            }
         } else if (hdr.type == LKG_MSG_TEXT_INPUT) {
             LkgTextInputReplyPayload reply;
             ++host->text_input_calls;
@@ -411,6 +430,13 @@ int test_app_protocol(void)
     rects[1].x = 0; rects[1].y = 1; rects[1].width = 16; rects[1].height = 1;
     rects[1].bar_top = 1; rects[1].bar_bottom = 2;
     TEST_ASSERT(lkg_app_present_rects(app, rects, 2) == 0);
+    {
+        LkgAnimRect anim_rect = { 0, 0, 16, 16, 12.5f };
+        LkgClipRect clip_rect = { 0, 0, 16, 16 };
+        TEST_ASSERT(lkg_app_upload_rect(app, 0, 0, 16, 16) == 0);
+        TEST_ASSERT(lkg_app_present_anim(app, &anim_rect, 1, &clip_rect, 1,
+                                         100, 242, 1, 1) == 0);
+    }
 
     TEST_ASSERT(lkg_app_text_input(app, "Edit Greeting", "Init", input_buf, sizeof(input_buf)) == 1);
     TEST_STRING(input_buf, "Hello SDK");
@@ -433,6 +459,9 @@ int test_app_protocol(void)
     TEST_ASSERT(host.saw_sync == 1);
     TEST_ASSERT(host.saw_present == 1);
     TEST_ASSERT(host.saw_present_rects == 1);
+    TEST_ASSERT(host.saw_upload_rect == 1);
+    TEST_ASSERT(host.saw_anim_present == 1);
+    TEST_ASSERT(host.last_anim_bar_top == 100 && host.last_anim_bar_bottom == 242);
     TEST_ASSERT(host.text_input_calls == 2);
 
     for (i = 0; i < 2; ++i) {

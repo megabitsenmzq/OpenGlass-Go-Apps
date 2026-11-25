@@ -4,14 +4,15 @@
 
 static void draw_menu_item(Display *display, Font *font, const DepthEffect *depth,
                            DepthLayer layers[2], int page, const char *item,
-                           const SystemInfo *info, int index, int active, int y)
+                           const SystemInfo *info, int index, int active, int y,
+                           int force_front)
 {
     const int row_height = display->mode.vdisplay / 17;
     const int bar_height = row_height - 8;
     const int margin = display->mode.hdisplay / 12;
     int baseline;
     uint32_t color = (active ? 0x101014 : 0xd8d8d8) | 0xff000000u;
-    Buffer *item_buffer = active ? &layers[0].buffer : &layers[1].buffer;
+    Buffer *item_buffer = (active || force_front) ? &layers[0].buffer : &layers[1].buffer;
     void (*draw_item_text)(Display *, Buffer *, Font *, const char *, int, int,
                            uint32_t) = active && depth->stereo ? draw_text_bold : draw_text;
     FT_Set_Pixel_Sizes(font->face, 0, 64);
@@ -56,7 +57,7 @@ void menu_view_draw_page(Display *display, Font *font, const DepthEffect *depth,
     memset(layers[1].buffer.pixels, 0, layers[1].buffer.size);
     for (i = 0; i < count; ++i)
         draw_menu_item(display, font, depth, layers, page, items[i], info,
-                       i, i == selected, start_y + i * row_height);
+                       i, i == selected, start_y + i * row_height, 0);
 }
 
 void menu_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
@@ -74,5 +75,23 @@ void menu_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
     draw_rect(display, &layers[0].buffer, 0, y, display->mode.hdisplay, row_height, 0);
     draw_rect(display, &layers[1].buffer, 0, y, display->mode.hdisplay, row_height, 0);
     draw_menu_item(display, font, depth, layers, page, items[row], info,
-                   row, row == selected, y);
+                   row, row == selected, y, 0);
+}
+
+void menu_view_draw_row_anim(Display *display, Font *font, const DepthEffect *depth,
+                             DepthLayer layers[2], int page, int has_apps, int row,
+                             int active, const SystemInfo *info)
+{
+    const char **items;
+    int count;
+    int row_height = display->mode.vdisplay / 17;
+    int start_y;
+    int y;
+    menu_items(page, has_apps, &items, &count);
+    start_y = ((int)display->mode.vdisplay - row_height * count) / 2;
+    y = start_y + row * row_height;
+    draw_rect(display, &layers[0].buffer, 0, y, display->mode.hdisplay, row_height, 0);
+    draw_rect(display, &layers[1].buffer, 0, y, display->mode.hdisplay, row_height, 0);
+    draw_menu_item(display, font, depth, layers, page, items[row], info,
+                   row, active, y, 1);
 }

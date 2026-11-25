@@ -54,15 +54,15 @@ int wifi_view_networks_row_y(const Display *display, int visible_rows, int row, 
     return start_y + (row == 0 ? 0 : (row - scroll) * WIFI_ROW_HEIGHT);
 }
 
-void wifi_view_draw_network_row(Display *display, Font *font, const DepthEffect *depth,
-                                DepthLayer layers[2], int row, int y, int selected,
-                                int scanning, int interactive, const WifiNetwork *network,
-                                const char *current_ssid, size_t current_ssid_length)
+static void draw_network_row_internal(Display *display, Font *font, const DepthEffect *depth,
+                                      DepthLayer layers[2], int row, int y, int active,
+                                      int scanning, const WifiNetwork *network,
+                                      const char *current_ssid, size_t current_ssid_length,
+                                      int force_front)
 {
     int width = (int)display->mode.hdisplay;
     int margin = width / 12;
-    int active = row == selected && interactive;
-    Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
+    Buffer *buffer = (active || force_front) ? &layers[0].buffer : &layers[1].buffer;
     uint32_t color = active ? 0xff101014 : 0xffd8d8d8;
     int bar_height = WIFI_ROW_HEIGHT - 8;
     int baseline;
@@ -88,14 +88,36 @@ void wifi_view_draw_network_row(Display *display, Font *font, const DepthEffect 
     }
 }
 
-void wifi_view_draw_details_row(Display *display, Font *font, const DepthEffect *depth,
+void wifi_view_draw_network_row(Display *display, Font *font, const DepthEffect *depth,
                                 DepthLayer layers[2], int row, int y, int selected,
-                                int interactive, int connected, const char *const values[9])
+                                int scanning, int interactive, const WifiNetwork *network,
+                                const char *current_ssid, size_t current_ssid_length)
+{
+    draw_network_row_internal(display, font, depth, layers, row, y,
+                              row == selected && interactive, scanning,
+                              network, current_ssid, current_ssid_length, 0);
+}
+
+void wifi_view_draw_network_row_anim(Display *display, Font *font, const DepthEffect *depth,
+                                     DepthLayer layers[2], int row, int y, int active,
+                                     int scanning, const WifiNetwork *network,
+                                     const char *current_ssid, size_t current_ssid_length)
+{
+    int width = (int)display->mode.hdisplay;
+    draw_rect(display, &layers[0].buffer, 0, y, width, WIFI_ROW_HEIGHT, 0);
+    draw_rect(display, &layers[1].buffer, 0, y, width, WIFI_ROW_HEIGHT, 0);
+    draw_network_row_internal(display, font, depth, layers, row, y, active, scanning,
+                              network, current_ssid, current_ssid_length, 1);
+}
+
+static void draw_details_row_internal(Display *display, Font *font, const DepthEffect *depth,
+                                      DepthLayer layers[2], int row, int y, int active,
+                                      int connected, const char *const values[9],
+                                      int force_front)
 {
     int width = (int)display->mode.hdisplay;
     int margin = width / 12;
-    int active = row == selected && interactive;
-    Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
+    Buffer *buffer = (active || force_front) ? &layers[0].buffer : &layers[1].buffer;
     uint32_t color = active ? 0xff101014 : 0xffd8d8d8;
     void (*draw_item_text)(Display *, Buffer *, Font *, const char *, int, int,
                            uint32_t) = active && depth->stereo ? draw_text_bold : draw_text;
@@ -122,6 +144,25 @@ void wifi_view_draw_details_row(Display *display, Font *font, const DepthEffect 
                                y + WIFI_ROW_HEIGHT * 76 / 100, color,
                                width - margin * 2 - 24, active && depth->stereo);
     }
+}
+
+void wifi_view_draw_details_row(Display *display, Font *font, const DepthEffect *depth,
+                                DepthLayer layers[2], int row, int y, int selected,
+                                int interactive, int connected, const char *const values[9])
+{
+    draw_details_row_internal(display, font, depth, layers, row, y,
+                              row == selected && interactive, connected, values, 0);
+}
+
+void wifi_view_draw_details_row_anim(Display *display, Font *font, const DepthEffect *depth,
+                                     DepthLayer layers[2], int row, int y, int active,
+                                     int connected, const char *const values[9])
+{
+    int width = (int)display->mode.hdisplay;
+    draw_rect(display, &layers[0].buffer, 0, y, width, WIFI_ROW_HEIGHT, 0);
+    draw_rect(display, &layers[1].buffer, 0, y, width, WIFI_ROW_HEIGHT, 0);
+    draw_details_row_internal(display, font, depth, layers, row, y, active,
+                              connected, values, 1);
 }
 
 void wifi_view_key_geometry(Display *display, int index, int *key_x, int *key_y,
@@ -203,8 +244,9 @@ static void draw_connect_icon(Display *display, Buffer *buffer, int center_x, in
     }
 }
 
-void wifi_view_draw_password_key(Display *display, Font *font, const DepthEffect *depth,
-                                 DepthLayer layers[2], int index, int active, int layout)
+static void draw_password_key_internal(Display *display, Font *font, const DepthEffect *depth,
+                                       DepthLayer layers[2], int index, int active, int layout,
+                                       int force_front)
 {
     const char *const *keys = password_keyboard_keys(layout);
     int x;
@@ -218,7 +260,11 @@ void wifi_view_draw_password_key(Display *display, Font *font, const DepthEffect
     uint32_t background;
     const char *label = keys[index];
     wifi_view_key_geometry(display, index, &x, &y, &key_width, &key_height);
-    buffer = active ? &layers[0].buffer : &layers[1].buffer;
+    if (force_front) {
+        draw_rect(display, &layers[0].buffer, x, y, key_width, key_height, 0);
+        draw_rect(display, &layers[1].buffer, x, y, key_width, key_height, 0);
+    }
+    buffer = (active || force_front) ? &layers[0].buffer : &layers[1].buffer;
     color = highlighted ? 0xff000000 : 0xffffffff;
     background = highlighted ? 0xffffffff : special ? 0xff444444 : 0xff2d2d2d;
     draw_rect(display, buffer, x, y, key_width, key_height, background);
@@ -247,15 +293,26 @@ void wifi_view_draw_password_key(Display *display, Font *font, const DepthEffect
     }
 }
 
-void wifi_view_draw_password_back(Display *display, Font *font, const DepthEffect *depth,
-                                  DepthLayer layers[2], int back_selected, int interactive)
+void wifi_view_draw_password_key(Display *display, Font *font, const DepthEffect *depth,
+                                 DepthLayer layers[2], int index, int active, int layout)
+{
+    draw_password_key_internal(display, font, depth, layers, index, active, layout, 0);
+}
+
+void wifi_view_draw_password_key_anim(Display *display, Font *font, const DepthEffect *depth,
+                                      DepthLayer layers[2], int index, int active, int layout)
+{
+    draw_password_key_internal(display, font, depth, layers, index, active, layout, 1);
+}
+
+static void draw_password_back_internal(Display *display, Font *font, const DepthEffect *depth,
+                                        DepthLayer layers[2], int active, int force_front)
 {
     int width = (int)display->mode.hdisplay;
     int back_margin = width / 12;
     int row_height = display->mode.vdisplay / 17;
     int top = row_height / 6;
-    int active = back_selected && interactive;
-    Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
+    Buffer *buffer = (active || force_front) ? &layers[0].buffer : &layers[1].buffer;
     uint32_t color = active ? 0xff101014 : 0xffd8d8d8;
     int baseline;
     draw_rect(display, &layers[0].buffer, 0, top, width, row_height, 0);
@@ -269,6 +326,19 @@ void wifi_view_draw_password_back(Display *display, Font *font, const DepthEffec
         draw_text_bold(display, buffer, font, "Back", back_margin + 24, baseline, color);
     else
         draw_text(display, buffer, font, "Back", back_margin + 24, baseline, color);
+}
+
+void wifi_view_draw_password_back(Display *display, Font *font, const DepthEffect *depth,
+                                  DepthLayer layers[2], int back_selected, int interactive)
+{
+    draw_password_back_internal(display, font, depth, layers,
+                                back_selected && interactive, 0);
+}
+
+void wifi_view_draw_password_back_anim(Display *display, Font *font, const DepthEffect *depth,
+                                       DepthLayer layers[2], int active)
+{
+    draw_password_back_internal(display, font, depth, layers, active, 1);
 }
 
 void wifi_view_draw_password_field(Display *display, Font *font, DepthLayer layers[2],

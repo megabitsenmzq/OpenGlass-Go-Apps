@@ -74,22 +74,29 @@ void gallery_view_draw_text_start(Display *display, Buffer *buffer, Font *font,
     free(widths);
 }
 
-static void draw_arrow(Display *display, Buffer *buffer, int x, int y, uint32_t color)
+static void draw_arrow(Display *display, Buffer *buffer, int x, int y,
+                       uint32_t color, int bold)
 {
+    int pad = bold ? 1 : 0;
+    int thick = 10 + pad * 2;
     int i;
-    draw_rect(display, buffer, x, y - 5, 120, 10, color);
+    draw_rect(display, buffer, x - pad, y - 5 - pad, 120 + pad * 2, thick, color);
     for (i = 0; i < 50; ++i) {
-        draw_rect(display, buffer, x + i, y - i - 5, 10, 10, color);
-        draw_rect(display, buffer, x + i, y + i - 5, 10, 10, color);
+        draw_rect(display, buffer, x + i - pad, y - i - 5 - pad, thick, thick, color);
+        draw_rect(display, buffer, x + i - pad, y + i - 5 - pad, thick, thick, color);
     }
 }
 
-static void draw_play(Display *display, Buffer *buffer, int x, int y, uint32_t color)
+static void draw_play(Display *display, Buffer *buffer, int x, int y,
+                      uint32_t color, int bold)
 {
+    int left = bold ? x - 1 : x;
+    int width = bold ? 99 : 96;
+    int base_height = bold ? 114 : 110;
     int column;
-    for (column = 0; column < 96; ++column) {
-        int height = 110 - column * 110 / 96;
-        draw_rect(display, buffer, x + column, y - height / 2, 1, height, color);
+    for (column = 0; column < width; ++column) {
+        int height = base_height - column * base_height / width;
+        draw_rect(display, buffer, left + column, y - height / 2, 1, height, color);
     }
 }
 
@@ -198,15 +205,55 @@ static void clear_area(DepthLayer *layers, int x, int y, int width, int height)
     }
 }
 
-void gallery_view_draw_cell(Display *display, Font *font, DepthLayer layers[2],
-                            int cell, int selected, GalleryItem *item,
-                            int special, int cursor)
+static void gallery_cell_origin(const Display *display, int cell, int *x, int *y)
 {
     const int cell_width = display->mode.hdisplay / 3;
     const int grid_y = 4;
     const int cell_height = (display->mode.vdisplay - grid_y - 50) / 3;
-    const int x = (cell % 3) * cell_width + (cell_width - THUMB_WIDTH) / 2;
-    const int y = grid_y + (cell / 3) * cell_height + (cell_height - THUMB_HEIGHT) / 2;
+    *x = (cell % 3) * cell_width + (cell_width - THUMB_WIDTH) / 2;
+    *y = grid_y + (cell / 3) * cell_height + (cell_height - THUMB_HEIGHT) / 2;
+}
+
+static void draw_cell_content(Display *display, Font *font, Buffer *buffer,
+                              int selected, GalleryItem *item, int x, int y)
+{
+    if (item) {
+        if (item->is_directory) {
+            draw_folder(display, buffer, item, x, y);
+            if (item->cover_path && !item->thumbnail)
+                draw_progress(display, buffer, item, x, y);
+        } else if (item->thumbnail) {
+            draw_thumbnail(display, buffer, item, x, y);
+        } else {
+            draw_rect(display, buffer, x, y, THUMB_WIDTH, THUMB_HEIGHT, 0x202028);
+            draw_progress(display, buffer, item, x, y);
+        }
+    }
+    if (selected && item)
+        draw_title(display, buffer, font, item, x, y);
+    if (selected)
+        draw_selection(display, buffer, x, y, THUMB_WIDTH);
+}
+
+static void draw_special_part(Display *display, Buffer *buffer, int x, int y,
+                              int part, uint32_t color, int bold)
+{
+    if (part == 0)
+        draw_arrow(display, buffer, x + (THUMB_WIDTH / 2 - 120) / 2,
+                   y + THUMB_HEIGHT / 2, color, bold);
+    else
+        draw_play(display, buffer,
+                  x + THUMB_WIDTH / 2 + (THUMB_WIDTH / 2 - 96) / 2 + 8,
+                  y + THUMB_HEIGHT / 2, color, bold);
+}
+
+void gallery_view_draw_cell(Display *display, Font *font, DepthLayer layers[2],
+                            int cell, int selected, GalleryItem *item,
+                            int special, int cursor)
+{
+    int x;
+    int y;
+    gallery_cell_origin(display, cell, &x, &y);
     if (special) {
         int part;
         clear_area(layers, x - 8, y - 8, THUMB_WIDTH + 16, THUMB_HEIGHT + 16);
@@ -216,15 +263,11 @@ void gallery_view_draw_cell(Display *display, Font *font, DepthLayer layers[2],
             int part_x = x + part * THUMB_WIDTH / 2;
             int active = cursor == part;
             Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
-            if (part == 0)
-                draw_arrow(display, buffer, x + (THUMB_WIDTH / 2 - 120) / 2,
-                           y + THUMB_HEIGHT / 2, 0xe8e8e8);
-            else
-                draw_play(display, buffer,
-                          x + THUMB_WIDTH / 2 + (THUMB_WIDTH / 2 - 96) / 2 + 8,
-                          y + THUMB_HEIGHT / 2, 0xe8e8e8);
+            uint32_t icon_color = active ? 0x00000000u : 0xe8e8e8u;
             if (active)
-                draw_selection(display, buffer, part_x, y, THUMB_WIDTH / 2);
+                draw_rect(display, buffer, part_x - 8, y - 8,
+                          THUMB_WIDTH / 2 + 16, THUMB_HEIGHT + 16, 0xffe8e8e8u);
+            draw_special_part(display, buffer, x, y, part, icon_color, active);
         }
         return;
     }
@@ -233,22 +276,43 @@ void gallery_view_draw_cell(Display *display, Font *font, DepthLayer layers[2],
         clear_area(layers, x - 8, y - 8, THUMB_WIDTH + 16, THUMB_HEIGHT + 16);
         draw_rect(display, buffer, x - 8, y - 8, THUMB_WIDTH + 16,
                   THUMB_HEIGHT + 16, 0x101014);
-        if (item) {
-            if (item->is_directory) {
-                draw_folder(display, buffer, item, x, y);
-                if (item->cover_path && !item->thumbnail)
-                    draw_progress(display, buffer, item, x, y);
-            } else if (item->thumbnail) {
-                draw_thumbnail(display, buffer, item, x, y);
-            } else {
-                draw_rect(display, buffer, x, y, THUMB_WIDTH, THUMB_HEIGHT, 0x202028);
-                draw_progress(display, buffer, item, x, y);
-            }
+        draw_cell_content(display, font, buffer, selected, item, x, y);
+    }
+}
+
+void gallery_view_draw_cell_anim(Display *display, Font *font, DepthLayer layers[2],
+                                 int cell, int selected, GalleryItem *item)
+{
+    int x;
+    int y;
+    gallery_cell_origin(display, cell, &x, &y);
+    clear_area(layers, x - 8, y - 8, THUMB_WIDTH + 16, THUMB_HEIGHT + 16);
+    draw_rect(display, &layers[1].buffer, x - 8, y - 8,
+              THUMB_WIDTH + 16, THUMB_HEIGHT + 16, 0x101014);
+    draw_cell_content(display, font, &layers[0].buffer, selected, item, x, y);
+}
+
+void gallery_view_draw_special_anim(Display *display, DepthLayer layers[2],
+                                    int active_slot, int sinking_slot)
+{
+    int x;
+    int y;
+    int part;
+    gallery_cell_origin(display, 0, &x, &y);
+    clear_area(layers, x - 8, y - 8, THUMB_WIDTH + 16, THUMB_HEIGHT + 16);
+    draw_rect(display, &layers[1].buffer, x - 8, y - 8,
+              THUMB_WIDTH + 16, THUMB_HEIGHT + 16, 0x101014);
+    for (part = 0; part < 2; ++part) {
+        if (part == active_slot) {
+            int part_x = x + part * THUMB_WIDTH / 2;
+            draw_rect(display, &layers[0].buffer, part_x - 8, y - 8,
+                      THUMB_WIDTH / 2 + 16, THUMB_HEIGHT + 16, 0xffe8e8e8u);
+            draw_special_part(display, &layers[0].buffer, x, y, part, 0x00000000u, 1);
+        } else if (part == sinking_slot) {
+            draw_special_part(display, &layers[0].buffer, x, y, part, 0xe8e8e8u, 0);
+        } else {
+            draw_special_part(display, &layers[1].buffer, x, y, part, 0xe8e8e8u, 0);
         }
-        if (selected && item)
-            draw_title(display, buffer, font, item, x, y);
-        if (selected)
-            draw_selection(display, buffer, x, y, THUMB_WIDTH);
     }
 }
 

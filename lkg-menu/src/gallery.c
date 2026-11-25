@@ -78,6 +78,8 @@ void gallery_release_memory(Gallery *gallery)
     gallery->cache.bake_active = 0;
     gallery->cache.bake_base = 0;
     gallery->cache.displayed_cached = 0;
+    gallery->cache.gpu_dirty_mask = 0;
+    gallery->anim.active = 0;
 }
 
 int gallery_scan(Gallery *gallery, const char *directory)
@@ -225,20 +227,25 @@ static GalleryItem *gallery_cell_item(Gallery *gallery, int cell)
     return NULL;
 }
 
-static void gallery_selected_slot(const Gallery *gallery, int *cell_out, int *slot_out)
+static void gallery_cursor_slot(int page, int cursor, int *cell_out, int *slot_out)
 {
-    if (gallery->page == 0) {
-        if (gallery->cursor < 2) {
+    if (page == 0) {
+        if (cursor < 2) {
             *cell_out = 0;
-            *slot_out = gallery->cursor;
+            *slot_out = cursor;
         } else {
-            *cell_out = gallery->cursor - 1;
+            *cell_out = cursor - 1;
             *slot_out = 1;
         }
     } else {
-        *cell_out = gallery->cursor;
+        *cell_out = cursor;
         *slot_out = 1;
     }
+}
+
+static void gallery_selected_slot(const Gallery *gallery, int *cell_out, int *slot_out)
+{
+    gallery_cursor_slot(gallery->page, gallery->cursor, cell_out, slot_out);
 }
 
 static void gallery_cell_patch_rect(Display *display, int cell,
@@ -363,6 +370,8 @@ static int gallery_bake_next(Display *display, Font *font, Gallery *gallery)
                 result = depth_gallery_bake_base(display, gallery->depth, layers, pixels, 0);
             if (layers_sel >= 0) {
                 int special = gallery->page == 0 && layers_sel == 0;
+                if (result == 0)
+                    gallery->cache.gpu_dirty_mask |= (1u << layers_sel);
                 gallery_view_draw_cell(display, font, layers, layers_sel, 1,
                                        gallery_cell_item(gallery, layers_sel),
                                        special, gallery->cache.layers_cursor);
@@ -468,11 +477,18 @@ static int gallery_bake_next(Display *display, Font *font, Gallery *gallery)
                 gallery_update_footer(display, font, gallery, layers);
             result = gallery_prepare_bake_pixels(display, gallery,
                                                  src_x, patch_y, src_w, patch_h, pixels);
-            if (result == 0)
+            if (result == 0) {
                 result = depth_gallery_bake_patch(display, gallery->depth, layers, pixels,
                                                   cell, slot,
                                                   src_x, patch_y, src_w, patch_h,
                                                   patch_x, patch_y, patch_w, patch_h, 0);
+                if (result == 0) {
+                    if (need_unselect_other)
+                        gallery->cache.gpu_dirty_mask |= (1u << layers_sel);
+                    if (need_select_cell)
+                        gallery->cache.gpu_dirty_mask |= (1u << cell);
+                }
+            }
             if (need_select_cell && layers_sel != cell) {
                 gallery_view_draw_cell(display, font, layers, cell, 0,
                                        gallery_cell_item(gallery, cell),
@@ -524,6 +540,349 @@ double gallery_monotonic_seconds(void)
     return now.tv_sec + now.tv_nsec / 1000000000.0;
 }
 
+static void gallery_cell_bounds(Display *display, int cell, int selected,
+                                int special, int slot, DepthAnimRect *rect)
+{
+    const int cell_width = display->mode.hdisplay / 3;
+    const int grid_y = 4;
+    const int cell_height = (display->mode.vdisplay - grid_y - 50) / 3;
+    const int x = (cell % 3) * cell_width + (cell_width - THUMB_WIDTH) / 2;
+    const int y = grid_y + (cell / 3) * cell_height + (cell_height - THUMB_HEIGHT) / 2;
+    if (special) {
+        if (selected) {
+            int part_x = x + slot * THUMB_WIDTH / 2;
+            rect->x0 = part_x - 8;
+            rect->y0 = y - 8;
+            rect->x1 = part_x + THUMB_WIDTH / 2 + 8;
+            rect->y1 = y + THUMB_HEIGHT + 8;
+        } else if (slot == 0) {
+            int arrow_x = x + (THUMB_WIDTH / 2 - 120) / 2;
+            rect->x0 = arrow_x;
+            rect->y0 = y + THUMB_HEIGHT / 2 - 55;
+            rect->x1 = arrow_x + 120;
+            rect->y1 = y + THUMB_HEIGHT / 2 + 55;
+        } else {
+            int play_x = x + THUMB_WIDTH / 2 + (THUMB_WIDTH / 2 - 96) / 2 + 8;
+            rect->x0 = play_x;
+            rect->y0 = y + THUMB_HEIGHT / 2 - 55;
+            rect->x1 = play_x + 96;
+            rect->y1 = y + THUMB_HEIGHT / 2 + 55;
+        }
+        return;
+    }
+    if (selected) {
+        rect->x0 = x - 8;
+        rect->y0 = y - 8;
+        rect->x1 = x + THUMB_WIDTH + 8;
+        rect->y1 = y + THUMB_HEIGHT + 8;
+    } else {
+        rect->x0 = x;
+        rect->y0 = y;
+        rect->x1 = x + THUMB_WIDTH;
+        rect->y1 = y + THUMB_HEIGHT;
+    }
+}
+
+static int gallery_upload_cell(Display *display, Gallery *gallery, int cell)
+{
+    const int screen_w = display->mode.hdisplay;
+    const int screen_h = display->mode.vdisplay;
+    const int cell_width = screen_w / 3;
+    const int grid_y = 4;
+    const int cell_height = (screen_h - grid_y - 50) / 3;
+    const int x = (cell % 3) * cell_width + (cell_width - THUMB_WIDTH) / 2;
+    const int y = grid_y + (cell / 3) * cell_height + (cell_height - THUMB_HEIGHT) / 2;
+    int ux0 = x - 8;
+    int uy0 = y - 8;
+    int ux1 = x + THUMB_WIDTH + 8;
+    int uy1 = y + THUMB_HEIGHT + 8;
+    int layer;
+    if (ux0 < 0)
+        ux0 = 0;
+    if (uy0 < 0)
+        uy0 = 0;
+    if (ux1 > screen_w)
+        ux1 = screen_w;
+    if (uy1 > screen_h)
+        uy1 = screen_h;
+    for (layer = 0; layer < 2; ++layer)
+        depth_layer_finish_area(&gallery->cache.layers[layer],
+                                ux0, uy0, ux1 - ux0, uy1 - uy0,
+                                screen_w, screen_h);
+    if (depth_gallery_upload(display, gallery->depth, gallery->cache.layers,
+                             ux0, uy0, ux1 - ux0, uy1 - uy0) != 0)
+        return -1;
+    gallery->cache.gpu_dirty_mask &= ~(1u << cell);
+    return 0;
+}
+
+static int gallery_sync_dirty_gpu_cells(Display *display, Gallery *gallery,
+                                        int skip_a, int skip_b)
+{
+    int cell;
+    if (!gallery->cache.gpu_dirty_mask || !depth_gallery_direct_upload(display, gallery->depth))
+        return 0;
+    for (cell = 0; cell < 9; ++cell) {
+        if (cell == skip_a || cell == skip_b)
+            continue;
+        if ((gallery->cache.gpu_dirty_mask & (1u << cell)) &&
+            gallery_upload_cell(display, gallery, cell) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static void gallery_anim_set_clips(Display *display, GalleryAnim *anim)
+{
+    int px0, py0, pw0, ph0, sx0, sw0;
+    int px1, py1, pw1, ph1, sx1, sw1;
+    gallery_cell_patch_rect(display, anim->old_cell, &px0, &py0, &pw0, &ph0, &sx0, &sw0);
+    if (anim->old_cell == anim->new_cell) {
+        anim->clip_count = 1;
+        anim->clip_x[0] = px0;
+        anim->clip_y[0] = py0;
+        anim->clip_w[0] = pw0;
+        anim->clip_h[0] = ph0;
+        return;
+    }
+    gallery_cell_patch_rect(display, anim->new_cell, &px1, &py1, &pw1, &ph1, &sx1, &sw1);
+    if (anim->old_cell / 3 == anim->new_cell / 3 &&
+        px0 < px1 + pw1 && px1 < px0 + pw0) {
+        int rx0 = px0 < px1 ? px0 : px1;
+        int ry0 = py0 < py1 ? py0 : py1;
+        int rx1 = px0 + pw0 > px1 + pw1 ? px0 + pw0 : px1 + pw1;
+        int ry1 = py0 + ph0 > py1 + ph1 ? py0 + ph0 : py1 + ph1;
+        anim->clip_count = 1;
+        anim->clip_x[0] = rx0;
+        anim->clip_y[0] = ry0;
+        anim->clip_w[0] = rx1 - rx0;
+        anim->clip_h[0] = ry1 - ry0;
+        return;
+    }
+    anim->clip_count = 2;
+    anim->clip_x[0] = px0;
+    anim->clip_y[0] = py0;
+    anim->clip_w[0] = pw0;
+    anim->clip_h[0] = ph0;
+    anim->clip_x[1] = px1;
+    anim->clip_y[1] = py1;
+    anim->clip_w[1] = pw1;
+    anim->clip_h[1] = ph1;
+}
+
+static int gallery_anim_finish_layers(Display *display, Font *font, Gallery *gallery)
+{
+    DepthLayer *layers = gallery->cache.layers;
+    int old_cell = gallery->anim.old_cell;
+    int new_cell = gallery->anim.new_cell;
+    if (old_cell == new_cell) {
+        gallery_view_draw_cell(display, font, layers, 0, 1, NULL, 1, gallery->cursor);
+    } else {
+        int old_special = gallery->page == 0 && old_cell == 0;
+        gallery_view_draw_cell(display, font, layers, old_cell, 0,
+                               gallery_cell_item(gallery, old_cell),
+                               old_special, 2);
+    }
+    if (old_cell / 3 == 2) {
+        if (gallery_update_footer(display, font, gallery, layers) != 0)
+            return -1;
+    }
+    if (gallery_upload_cell(display, gallery, old_cell) != 0)
+        return -1;
+    gallery->cache.cells[old_cell].selected = (old_cell == new_cell);
+    gallery->cache.cells[new_cell].selected = 1;
+    gallery->cache.layers_cursor = gallery->cursor;
+    gallery->anim.active = 0;
+    return 0;
+}
+
+static int gallery_anim_cancel(Display *display, Font *font, Gallery *gallery)
+{
+    int old_cell;
+    int new_cell;
+    if (!gallery->anim.active)
+        return 0;
+    old_cell = gallery->anim.old_cell;
+    new_cell = gallery->anim.new_cell;
+    if (gallery->cache.page != gallery->page ||
+        depth_cache_needs_full(gallery->depth, &gallery->cache.cache_state, 0)) {
+        gallery->anim.active = 0;
+    } else if (gallery_anim_finish_layers(display, font, gallery) != 0) {
+        return -1;
+    }
+    gallery->cache.cells[old_cell].selected = -1;
+    gallery->cache.cells[new_cell].selected = -1;
+    return 0;
+}
+
+static int gallery_anim_step(Display *display, Font *font, Gallery *gallery)
+{
+    GalleryAnim *anim = &gallery->anim;
+    DepthLayer *layers = gallery->cache.layers;
+    double elapsed;
+    double t;
+    float inv;
+    float ease;
+    float front_disp = gallery->depth->front_disparity;
+    float back_disp = gallery->depth->back_disparity;
+    float d_old;
+    float d_new;
+    int done;
+    int i;
+    if (!anim->active)
+        return 0;
+    elapsed = gallery_monotonic_seconds() - anim->started;
+    t = anim->duration > 0.0 ? elapsed / anim->duration : 1.0;
+    done = t >= 1.0;
+    if (t < 0.0)
+        t = 0.0;
+    else if (t > 1.0)
+        t = 1.0;
+    inv = 1.0f - (float)t;
+    ease = 1.0f - inv * inv * inv;
+    d_old = anim->old_start_disparity + (back_disp - anim->old_start_disparity) * ease;
+    d_new = anim->new_start_disparity + (front_disp - anim->new_start_disparity) * ease;
+    anim->cur_old_disparity = d_old;
+    anim->cur_new_disparity = d_new;
+    anim->old_rect.disparity = d_old;
+    anim->new_rect.disparity = d_new;
+    for (i = 0; i < anim->clip_count; ++i) {
+        if (depth_gallery_anim_region(display, gallery->depth, layers,
+                                      &anim->new_rect, &anim->old_rect,
+                                      anim->clip_x[i], anim->clip_y[i],
+                                      anim->clip_w[i], anim->clip_h[i], 0, 0) != 0)
+            return -1;
+    }
+    if (depth_gallery_present(display, gallery->depth) != 0)
+        return -1;
+    ++anim->frames;
+    if (done) {
+        double total_ms = (gallery_monotonic_seconds() - anim->started) * 1000.0;
+        if (total_ms > 0.0) {
+            fprintf(stderr, "Gallery anim: %d frames in %.1f ms (%.1f FPS)\n",
+                    anim->frames, total_ms, anim->frames * 1000.0 / total_ms);
+        }
+        if (gallery_anim_finish_layers(display, font, gallery) != 0)
+            return -1;
+        depth_cache_commit(gallery->depth, &gallery->cache.cache_state, 0);
+    }
+    return 0;
+}
+
+static int gallery_anim_begin(Display *display, Font *font, Gallery *gallery,
+                              int old_cursor, int new_cursor)
+{
+    DepthLayer *layers = gallery->cache.layers;
+    int old_cell;
+    int old_slot;
+    int new_cell;
+    int new_slot;
+    float front_disp;
+    float back_disp;
+    float old_start;
+    float new_start;
+    if (!gallery->depth || !gallery->depth->stereo ||
+        !depth_gallery_direct_upload(display, gallery->depth) ||
+        !gallery->cache.cache_state.initialized ||
+        gallery->cache.page != gallery->page ||
+        old_cursor == new_cursor)
+        return 0;
+    front_disp = gallery->depth->front_disparity;
+    back_disp = gallery->depth->back_disparity;
+    old_start = front_disp;
+    new_start = back_disp;
+    gallery_cursor_slot(gallery->page, old_cursor, &old_cell, &old_slot);
+    gallery_cursor_slot(gallery->page, new_cursor, &new_cell, &new_slot);
+    if (gallery->anim.active) {
+        GalleryAnim prev = gallery->anim;
+        if (old_cell == prev.new_cell && old_slot == prev.new_slot)
+            old_start = prev.cur_new_disparity;
+        if (new_cell == prev.old_cell && new_slot == prev.old_slot)
+            new_start = prev.cur_old_disparity;
+        if (prev.old_cell != old_cell && prev.old_cell != new_cell) {
+            int prev_special = gallery->page == 0 && prev.old_cell == 0;
+            int px, py, pw, ph, sx, sw;
+            gallery_view_draw_cell(display, font, layers, prev.old_cell, 0,
+                                   gallery_cell_item(gallery, prev.old_cell),
+                                   prev_special, 2);
+            if (prev.old_cell / 3 == 2 &&
+                gallery_update_footer(display, font, gallery, layers) != 0)
+                return -1;
+            if (gallery_upload_cell(display, gallery, prev.old_cell) != 0)
+                return -1;
+            gallery->cache.cells[prev.old_cell].selected = 0;
+            gallery_cell_patch_rect(display, prev.old_cell, &px, &py, &pw, &ph, &sx, &sw);
+            if (depth_gallery_anim_region(display, gallery->depth, layers,
+                                          NULL, NULL, px, py, pw, ph, 0, 0) != 0)
+                return -1;
+        }
+        gallery->anim.active = 0;
+    } else {
+        int stale = gallery_layers_selected_cell(gallery);
+        if (stale >= 0 && stale != old_cell && stale != new_cell) {
+            int stale_special = gallery->page == 0 && stale == 0;
+            gallery_view_draw_cell(display, font, layers, stale, 0,
+                                   gallery_cell_item(gallery, stale),
+                                   stale_special, 2);
+            if (stale / 3 == 2 &&
+                gallery_update_footer(display, font, gallery, layers) != 0)
+                return -1;
+            if (gallery_upload_cell(display, gallery, stale) != 0)
+                return -1;
+            gallery->cache.cells[stale].selected = 0;
+        }
+    }
+    if (gallery_sync_dirty_gpu_cells(display, gallery, old_cell, new_cell) != 0)
+        return -1;
+    if (old_cell == new_cell) {
+        gallery_view_draw_special_anim(display, layers, new_slot, old_slot);
+    } else {
+        if (gallery->page == 0 && old_cell == 0)
+            gallery_view_draw_special_anim(display, layers, -1, old_slot);
+        else
+            gallery_view_draw_cell_anim(display, font, layers, old_cell, 0,
+                                        gallery_cell_item(gallery, old_cell));
+        if (gallery->page == 0 && new_cell == 0)
+            gallery_view_draw_special_anim(display, layers, new_slot, -1);
+        else
+            gallery_view_draw_cell_anim(display, font, layers, new_cell, 1,
+                                        gallery_cell_item(gallery, new_cell));
+    }
+    if ((old_cell / 3 == 2 || new_cell / 3 == 2) &&
+        gallery_update_footer(display, font, gallery, layers) != 0)
+        return -1;
+    if (gallery_upload_cell(display, gallery, old_cell) != 0)
+        return -1;
+    if (new_cell != old_cell && gallery_upload_cell(display, gallery, new_cell) != 0)
+        return -1;
+    memset(&gallery->anim, 0, sizeof(gallery->anim));
+    gallery->anim.active = 1;
+    gallery->anim.duration = 0.22;
+    gallery->anim.started = gallery_monotonic_seconds() - 0.016;
+    gallery->anim.old_cell = old_cell;
+    gallery->anim.old_slot = old_slot;
+    gallery->anim.new_cell = new_cell;
+    gallery->anim.new_slot = new_slot;
+    gallery->anim.old_start_disparity = old_start;
+    gallery->anim.new_start_disparity = new_start;
+    gallery->anim.cur_old_disparity = old_start;
+    gallery->anim.cur_new_disparity = new_start;
+    gallery_cell_bounds(display, old_cell, 0,
+                        gallery->page == 0 && old_cell == 0, old_slot,
+                        &gallery->anim.old_rect);
+    gallery_cell_bounds(display, new_cell, 1,
+                        gallery->page == 0 && new_cell == 0, new_slot,
+                        &gallery->anim.new_rect);
+    gallery_anim_set_clips(display, &gallery->anim);
+    gallery->cache.cursor = new_cursor;
+    gallery->cache.displayed_cached = 0;
+    gallery->cache.bake_active = 0;
+    gallery->cache.bake_base = 0;
+    if (gallery_anim_step(display, font, gallery) != 0)
+        return -1;
+    return 1;
+}
+
 int gallery_draw(Display *display, Font *font, Gallery *gallery)
 {
     static int profile_frames;
@@ -545,6 +904,8 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
     if (!gallery->cache.layers || !gallery->cache.layers[0].buffer.pixels ||
         !gallery->cache.layers[1].buffer.pixels)
         return -1;
+    if (gallery_anim_cancel(display, font, gallery) != 0)
+        return -1;
     if (depth_frame_begin(&frame, display, gallery->depth, gallery->cache.layers,
                           &gallery->cache.cache_state, 0,
                           gallery->cache.page != gallery->page) != 0)
@@ -560,6 +921,7 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
         memset(gallery->cache.valid, 0, sizeof(gallery->cache.valid));
         gallery->cache.bake_active = 0;
         gallery->cache.bake_base = 0;
+        gallery->cache.gpu_dirty_mask = 0;
     }
     {
         GalleryItem *items[9] = {0};
@@ -637,12 +999,16 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
                 state->thumbnail_state = items[cell] ? items[cell]->thumbnail_state : 0;
                 state->progress = items[cell] ? items[cell]->progress : 0.0f;
                 state->selected = selected[cell];
+                gallery->cache.gpu_dirty_mask &= ~(1u << cell);
             }
         }
         if (!cached) {
             gallery->cache.layers_cursor = gallery->cursor;
             if ((full || bottom_row_dirty) &&
                 gallery_update_footer(display, font, gallery, gallery->cache.layers) != 0)
+                return -1;
+            if (!full && region_count > 0 &&
+                gallery_sync_dirty_gpu_cells(display, gallery, -1, -1) != 0)
                 return -1;
         }
     }
@@ -1361,7 +1727,8 @@ static int worker_update(Display *display, Font *font, Gallery *gallery, ThumbWo
             return gallery_draw(display, font, gallery);
         return 0;
     }
-    if (worker_item_visible(gallery, worker->item) && (worker->ticks++ % 4) == 0)
+    if (!gallery->anim.active &&
+        worker_item_visible(gallery, worker->item) && (worker->ticks++ % 4) == 0)
         return gallery_draw(display, font, gallery);
     return 0;
 }
@@ -1529,7 +1896,8 @@ int gallery_run(Display *display, Font *font, DepthEffect *depth,
             result = -1;
             break;
         }
-        timeout = worker.pid > 0 || cleanup_pid > 0 || gallery_cache_pending(&gallery) ? 50 : 500;
+        timeout = gallery.anim.active ? 0 :
+                  (worker.pid > 0 || cleanup_pid > 0 || gallery_cache_pending(&gallery) ? 50 : 500);
         event = usb_keyboard_next_command(keyboard, command, sizeof(command));
         if (event > 0)
             usb_keyboard_prepare_command(command, button_reversed);
@@ -1543,6 +1911,13 @@ int gallery_run(Display *display, Font *font, DepthEffect *depth,
         if (event < 0)
             break;
         if (event == 0) {
+            if (gallery.anim.active) {
+                if (gallery_anim_step(display, font, &gallery) != 0) {
+                    result = -1;
+                    break;
+                }
+                continue;
+            }
             if (worker.pid <= 0 && gallery_cache_pending(&gallery)) {
                 gallery.allow_cache_bake = 1;
                 if (gallery_draw(display, font, &gallery) != 0) {
@@ -1570,6 +1945,8 @@ int gallery_run(Display *display, Font *font, DepthEffect *depth,
                 break;
             }
         } else if (strcmp(command, "PREV") == 0) {
+            int old_page = gallery.page;
+            int old_cursor = gallery.cursor;
             if (gallery.cursor == last_cursor(&gallery)) {
                 if (gallery.page + 1 < page_count(&gallery))
                     ++gallery.page;
@@ -1585,11 +1962,23 @@ int gallery_run(Display *display, Font *font, DepthEffect *depth,
             } else {
                 ++gallery.cursor;
             }
+            if (gallery.page == old_page) {
+                int anim_result = gallery_anim_begin(display, font, &gallery,
+                                                     old_cursor, gallery.cursor);
+                if (anim_result < 0) {
+                    result = -1;
+                    break;
+                }
+                if (anim_result > 0)
+                    continue;
+            }
             if (gallery_draw(display, font, &gallery) != 0) {
                 result = -1;
                 break;
             }
         } else if (strcmp(command, "NEXT") == 0) {
+            int old_page = gallery.page;
+            int old_cursor = gallery.cursor;
             if (gallery.cursor == 0) {
                 if (gallery.page > 0)
                     --gallery.page;
@@ -1604,6 +1993,16 @@ int gallery_run(Display *display, Font *font, DepthEffect *depth,
                 }
             } else {
                 --gallery.cursor;
+            }
+            if (gallery.page == old_page) {
+                int anim_result = gallery_anim_begin(display, font, &gallery,
+                                                     old_cursor, gallery.cursor);
+                if (anim_result < 0) {
+                    result = -1;
+                    break;
+                }
+                if (anim_result > 0)
+                    continue;
             }
             if (gallery_draw(display, font, &gallery) != 0) {
                 result = -1;

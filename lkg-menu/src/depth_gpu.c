@@ -47,6 +47,24 @@ typedef struct {
     GLint stereo;
 } DepthUniforms;
 
+typedef struct {
+    GLint layer[2];
+    GLint resolution;
+    GLint inv_resolution;
+    GLint back_disparity;
+    GLint first_disparity;
+    GLint second_disparity;
+    GLint first_bounds;
+    GLint second_bounds;
+    GLint bar_range;
+    GLint pitch;
+    GLint tilt;
+    GLint center;
+    GLint fringe;
+    GLint inv_view;
+    GLint flip_subp;
+} DepthAnimUniforms;
+
 struct DepthGpu {
     struct gbm_device *gbm;
     struct gbm_surface *gbm_surface;
@@ -58,6 +76,8 @@ struct DepthGpu {
     EGLSurface surface;
     GLuint program;
     DepthUniforms uniforms;
+    GLuint anim_program;
+    DepthAnimUniforms anim_uniforms;
     GLint blit_cache_uniform;
     int unpack_subimage;
     GLuint textures[2];
@@ -185,6 +205,95 @@ static const char *blit_fragment_source =
     "varying vec2 v_uv;\n"
     "uniform sampler2D u_cache;\n"
     "void main() { gl_FragColor = texture2D(u_cache, v_uv); }\n";
+
+static const char *anim_fragment_source =
+    "precision highp float;\n"
+    "uniform sampler2D u_layer0;\n"
+    "uniform sampler2D u_layer1;\n"
+    "uniform vec2 u_resolution;\n"
+    "uniform vec2 u_inv_resolution;\n"
+    "uniform float u_back_disparity;\n"
+    "uniform float u_first_disparity;\n"
+    "uniform float u_second_disparity;\n"
+    "uniform vec4 u_first_bounds;\n"
+    "uniform vec4 u_second_bounds;\n"
+    "uniform vec2 u_bar_range;\n"
+    "uniform float u_pitch;\n"
+    "uniform float u_tilt;\n"
+    "uniform float u_center;\n"
+    "uniform float u_fringe;\n"
+    "uniform int u_inv_view;\n"
+    "uniform int u_flip_subp;\n"
+    "vec3 base_color(vec2 source) {\n"
+    "  if (source.y >= u_bar_range.x && source.y < u_bar_range.y)\n"
+    "    return vec3(232.0 / 255.0);\n"
+    "  return vec3(16.0 / 255.0, 16.0 / 255.0, 20.0 / 255.0);\n"
+    "}\n"
+    "vec4 sample_premul(sampler2D image, float x, float y) {\n"
+    "  vec4 c = texture2D(image, vec2(x + 0.5, y + 0.5) * u_inv_resolution);\n"
+    "  return vec4(c.rgb * c.a, c.a);\n"
+    "}\n"
+    "vec4 sample_bounded(sampler2D image, float disp, vec4 bounds, float angle, vec2 source) {\n"
+    "  if (bounds.z <= bounds.x || source.y < bounds.y || source.y >= bounds.w)\n"
+    "    return vec4(0.0);\n"
+    "  float lx = source.x + disp * angle;\n"
+    "  if (lx <= bounds.x - 1.0 || lx >= bounds.z)\n"
+    "    return vec4(0.0);\n"
+    "  float x0 = floor(lx);\n"
+    "  float frac = lx - x0;\n"
+    "  vec4 left = (x0 >= bounds.x && x0 < bounds.z)\n"
+    "      ? sample_premul(image, x0, source.y) : vec4(0.0);\n"
+    "  vec4 right = (x0 + 1.0 >= bounds.x && x0 + 1.0 < bounds.z)\n"
+    "      ? sample_premul(image, x0 + 1.0, source.y) : vec4(0.0);\n"
+    "  return mix(left, right, frac);\n"
+    "}\n"
+    "vec4 sample_back(float angle, vec2 source) {\n"
+    "  float lx = source.x + u_back_disparity * angle;\n"
+    "  if (lx <= -1.0 || lx >= u_resolution.x)\n"
+    "    return vec4(0.0);\n"
+    "  float x0 = floor(lx);\n"
+    "  float frac = lx - x0;\n"
+    "  vec4 left = (x0 >= 0.0 && x0 < u_resolution.x)\n"
+    "      ? sample_premul(u_layer1, x0, source.y) : vec4(0.0);\n"
+    "  vec4 right = (x0 + 1.0 >= 0.0 && x0 + 1.0 < u_resolution.x)\n"
+    "      ? sample_premul(u_layer1, x0 + 1.0, source.y) : vec4(0.0);\n"
+    "  return mix(left, right, frac);\n"
+    "}\n"
+    "vec3 composite_anim(float angle, vec2 source, vec3 base) {\n"
+    "  vec4 top = sample_bounded(u_layer0, u_first_disparity, u_first_bounds, angle, source);\n"
+    "  if (top.a >= 0.999)\n"
+    "    return top.rgb;\n"
+    "  vec3 color = top.rgb;\n"
+    "  float rem = 1.0 - top.a;\n"
+    "  vec4 mid = sample_bounded(u_layer0, u_second_disparity, u_second_bounds, angle, source);\n"
+    "  if (mid.a > 0.0) {\n"
+    "    color += mid.rgb * rem;\n"
+    "    rem *= (1.0 - mid.a);\n"
+    "    if (rem <= 0.001)\n"
+    "      return color;\n"
+    "  }\n"
+    "  vec4 bg = sample_back(angle, source);\n"
+    "  vec3 under = bg.rgb + base * (1.0 - bg.a);\n"
+    "  return color + under * rem;\n"
+    "}\n"
+    "void main() {\n"
+    "  vec2 frag = gl_FragCoord.xy;\n"
+    "  vec2 source = vec2(frag.x - 0.5, u_resolution.y - frag.y - 0.5);\n"
+    "  vec3 base = base_color(source);\n"
+    "  vec2 pixel = frag * u_inv_resolution;\n"
+    "  float base_phase = (pixel.x + pixel.y * u_tilt) * u_pitch - u_center + u_fringe;\n"
+    "  float sub_step = u_pitch / (3.0 * u_resolution.x);\n"
+    "  float p0 = u_flip_subp != 0 ? base_phase + 2.0 * sub_step : base_phase;\n"
+    "  float p1 = base_phase + sub_step;\n"
+    "  float p2 = u_flip_subp != 0 ? base_phase : base_phase + 2.0 * sub_step;\n"
+    "  p0 = u_inv_view != 0 ? 1.0 - fract(p0) : fract(p0);\n"
+    "  p1 = u_inv_view != 0 ? 1.0 - fract(p1) : fract(p1);\n"
+    "  p2 = u_inv_view != 0 ? 1.0 - fract(p2) : fract(p2);\n"
+    "  vec3 r = composite_anim(2.0 * p0 - 1.0, source, base);\n"
+    "  vec3 g = composite_anim(2.0 * p1 - 1.0, source, base);\n"
+    "  vec3 b = composite_anim(2.0 * p2 - 1.0, source, base);\n"
+    "  gl_FragColor = vec4(r.r, g.g, b.b, 1.0);\n"
+    "}\n";
 
 static int has_extension(const char *extensions, const char *name)
 {
@@ -337,6 +446,8 @@ static void destroy_gl(DepthGpu *gpu)
                 glDeleteTextures(2, gpu->textures);
             if (gpu->program)
                 glDeleteProgram(gpu->program);
+            if (gpu->anim_program)
+                glDeleteProgram(gpu->anim_program);
             if (gpu->blit_program)
                 glDeleteProgram(gpu->blit_program);
             if (gpu->cache_texture)
@@ -729,6 +840,116 @@ int depth_gpu_gallery_region(DepthGpu *gpu, Display *display, const DepthEffect 
 {
     return cached_region(gpu, display, effect, layers, pixels, x, y, width, height,
                          clip_x, clip_y, clip_width, clip_height, upload, 0, 0);
+}
+
+static int anim_program_init(DepthGpu *gpu)
+{
+    DepthAnimUniforms *u = &gpu->anim_uniforms;
+    if (gpu->anim_program)
+        return 0;
+    gpu->anim_program = create_program(vertex_source, anim_fragment_source);
+    if (!gpu->anim_program)
+        return -1;
+    u->layer[0] = glGetUniformLocation(gpu->anim_program, "u_layer0");
+    u->layer[1] = glGetUniformLocation(gpu->anim_program, "u_layer1");
+    u->resolution = glGetUniformLocation(gpu->anim_program, "u_resolution");
+    u->inv_resolution = glGetUniformLocation(gpu->anim_program, "u_inv_resolution");
+    u->back_disparity = glGetUniformLocation(gpu->anim_program, "u_back_disparity");
+    u->first_disparity = glGetUniformLocation(gpu->anim_program, "u_first_disparity");
+    u->second_disparity = glGetUniformLocation(gpu->anim_program, "u_second_disparity");
+    u->first_bounds = glGetUniformLocation(gpu->anim_program, "u_first_bounds");
+    u->second_bounds = glGetUniformLocation(gpu->anim_program, "u_second_bounds");
+    u->bar_range = glGetUniformLocation(gpu->anim_program, "u_bar_range");
+    u->pitch = glGetUniformLocation(gpu->anim_program, "u_pitch");
+    u->tilt = glGetUniformLocation(gpu->anim_program, "u_tilt");
+    u->center = glGetUniformLocation(gpu->anim_program, "u_center");
+    u->fringe = glGetUniformLocation(gpu->anim_program, "u_fringe");
+    u->inv_view = glGetUniformLocation(gpu->anim_program, "u_inv_view");
+    u->flip_subp = glGetUniformLocation(gpu->anim_program, "u_flip_subp");
+    glUseProgram(gpu->anim_program);
+    glUniform1i(u->layer[0], 0);
+    glUniform1i(u->layer[1], 1);
+    return glGetError() == GL_NO_ERROR ? 0 : -1;
+}
+
+int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEffect *effect,
+                                  const DepthLayer *layers,
+                                  const DepthAnimRect *first, const DepthAnimRect *second,
+                                  int clip_x, int clip_y, int clip_width, int clip_height,
+                                  int bar_top, int bar_bottom)
+{
+    const int screen_w = display->mode.hdisplay;
+    const int screen_h = display->mode.vdisplay;
+    float pitch;
+    float tilt;
+    int i;
+    if (gpu->failed || !depth_gpu_direct_upload(gpu) ||
+        gpu->layer_width != screen_w || gpu->layer_height != screen_h ||
+        clip_x < 0 || clip_y < 0 || clip_width <= 0 || clip_height <= 0 ||
+        clip_x + clip_width > screen_w || clip_y + clip_height > screen_h ||
+        !eglMakeCurrent(gpu->display, gpu->surface, gpu->surface, gpu->context) ||
+        gallery_cache_init(gpu, display) != 0 ||
+        anim_program_init(gpu) != 0)
+        return -1;
+    if (!first && second) {
+        first = second;
+        second = NULL;
+    }
+    if (first && second && second->disparity > first->disparity) {
+        const DepthAnimRect *tmp = first;
+        first = second;
+        second = tmp;
+    }
+    for (i = 0; i < 2; ++i) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, gpu->textures[i]);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, gpu->cache_framebuffer);
+    glViewport(0, 0, gpu->cache_width, gpu->cache_height);
+    glEnable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    glUseProgram(gpu->anim_program);
+    pitch = effect->pitch * effect->screen_w / effect->dpi *
+            sinf(atanf(fabsf(effect->slope)));
+    tilt = effect->screen_h / (effect->screen_w * effect->slope);
+    glUniform2f(gpu->anim_uniforms.resolution, (float)screen_w, (float)screen_h);
+    glUniform2f(gpu->anim_uniforms.inv_resolution,
+                1.0f / (float)screen_w, 1.0f / (float)screen_h);
+    glUniform1f(gpu->anim_uniforms.back_disparity, layers[1].disparity);
+    if (first) {
+        glUniform1f(gpu->anim_uniforms.first_disparity, first->disparity);
+        glUniform4f(gpu->anim_uniforms.first_bounds,
+                    (float)first->x0, (float)first->y0,
+                    (float)first->x1, (float)first->y1);
+    } else {
+        glUniform1f(gpu->anim_uniforms.first_disparity, 0.0f);
+        glUniform4f(gpu->anim_uniforms.first_bounds, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    if (second) {
+        glUniform1f(gpu->anim_uniforms.second_disparity, second->disparity);
+        glUniform4f(gpu->anim_uniforms.second_bounds,
+                    (float)second->x0, (float)second->y0,
+                    (float)second->x1, (float)second->y1);
+    } else {
+        glUniform1f(gpu->anim_uniforms.second_disparity, 0.0f);
+        glUniform4f(gpu->anim_uniforms.second_bounds, 0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    glUniform2f(gpu->anim_uniforms.bar_range, (float)bar_top, (float)bar_bottom);
+    glUniform1f(gpu->anim_uniforms.pitch, pitch);
+    glUniform1f(gpu->anim_uniforms.tilt, tilt);
+    glUniform1f(gpu->anim_uniforms.center, effect->center);
+    glUniform1f(gpu->anim_uniforms.fringe, effect->fringe);
+    glUniform1i(gpu->anim_uniforms.inv_view, effect->inv_view);
+    glUniform1i(gpu->anim_uniforms.flip_subp, effect->flip_subp);
+    glScissor(clip_x, gpu->cache_height - clip_y - clip_height, clip_width, clip_height);
+    draw_vertices();
+    glFlush();
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (glGetError() != GL_NO_ERROR)
+        return -1;
+    advance_cache_revision(gpu);
+    return 0;
 }
 
 int depth_gpu_gallery_bake_base(DepthGpu *gpu, Display *display, const DepthEffect *effect,

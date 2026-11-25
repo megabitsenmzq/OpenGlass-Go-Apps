@@ -7,7 +7,7 @@ PACKAGES := gbm egl glesv2 libdrm freetype2 libpng16 libjpeg libqrencode libheif
 APP_SOURCES := src/main.c src/gallery.c src/gallery_playback.c src/gallery_prerender.c \
 	src/gallery_view.c src/wifi.c \
 	src/cache_key.c src/thumbnail.c \
-	src/depth.c src/depth_cache.c src/depth_frame.c src/depth_gpu.c src/file_manager_view.c \
+	src/depth.c src/depth_anim.c src/depth_cache.c src/depth_frame.c src/depth_gpu.c src/file_manager_view.c \
 	src/media_scan.c src/menu_model.c src/menu_view.c src/usb_keyboard.c \
 	src/password_keyboard.c src/prerender_view.c src/serial_parser.c src/text_fit.c src/ui.c \
 	src/volume.c src/wifi_control.c src/wifi_model.c src/wifi_ui.c src/wifi_view.c \

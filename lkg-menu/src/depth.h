@@ -29,6 +29,14 @@ typedef struct {
     float disparity;
 } DepthLayer;
 
+typedef struct {
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+    float disparity;
+} DepthAnimRect;
+
 int depth_cache_needs_full(const DepthEffect *effect, const DepthCacheState *state,
                            uint64_t content_key);
 void depth_cache_commit(const DepthEffect *effect, DepthCacheState *state,
@@ -52,6 +60,11 @@ int depth_gallery_region(Display *display, const DepthEffect *effect,
                          const DepthLayer *layers, const uint8_t *const pixels[2],
                          int x, int y, int width, int height,
                          int clip_x, int clip_y, int clip_width, int clip_height, int upload);
+int depth_gallery_anim_region(Display *display, const DepthEffect *effect,
+                              const DepthLayer *layers,
+                              const DepthAnimRect *first, const DepthAnimRect *second,
+                              int clip_x, int clip_y, int clip_width, int clip_height,
+                              int bar_top, int bar_bottom);
 int depth_gallery_bake_base(Display *display, const DepthEffect *effect,
                             const DepthLayer *layers, const uint8_t *const pixels[2],
                             int band);

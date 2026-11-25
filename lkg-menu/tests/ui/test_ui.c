@@ -1,5 +1,6 @@
 #include "../test.h"
 #include "apps_view.h"
+#include "depth_anim.h"
 #include "depth_fakes.h"
 #include "file_manager_view.h"
 #include "menu_view.h"
@@ -340,6 +341,7 @@ static int test_gallery_cells(Display *display, Font *font, DepthLayer layers[2]
 {
     const int x = 15;
     const int y = 21;
+    const int arrow_x = x + (THUMB_WIDTH / 2 - 120) / 2;
     const int play_x = x + THUMB_WIDTH / 2 + (THUMB_WIDTH / 2 - 96) / 2 + 8;
     GalleryItem item = {0};
     uint8_t *thumbnail = malloc(THUMB_BYTES);
@@ -353,9 +355,18 @@ static int test_gallery_cells(Display *display, Font *font, DepthLayer layers[2]
     TEST_ASSERT(gallery_default_cursor(20) == 0);
     memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
     memset(layers[1].buffer.pixels, 0, layers[1].buffer.size);
+    gallery_view_draw_cell(display, font, layers, 0, 0, NULL, 1, 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, arrow_x - 2, y + THUMB_HEIGHT / 2) == 0xffe8e8e8u);
+    TEST_ASSERT(pixel(&layers[0].buffer, arrow_x - 1, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, arrow_x, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[1].buffer, arrow_x, y + THUMB_HEIGHT / 2) == 0x101014);
+    TEST_ASSERT(pixel(&layers[1].buffer, play_x, y + THUMB_HEIGHT / 2) == 0xe8e8e8);
     gallery_view_draw_cell(display, font, layers, 0, 0, NULL, 1, 1);
-    TEST_ASSERT(pixel(&layers[0].buffer, play_x, y + THUMB_HEIGHT / 2) == 0xe8e8e8);
-    TEST_ASSERT(pixel(&layers[0].buffer, play_x - 1, y + THUMB_HEIGHT / 2) != 0xe8e8e8);
+    TEST_ASSERT(pixel(&layers[0].buffer, play_x - 2, y + THUMB_HEIGHT / 2) == 0xffe8e8e8u);
+    TEST_ASSERT(pixel(&layers[0].buffer, play_x - 1, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, play_x, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[1].buffer, play_x, y + THUMB_HEIGHT / 2) == 0x101014);
+    TEST_ASSERT(pixel(&layers[1].buffer, arrow_x, y + THUMB_HEIGHT / 2) == 0xe8e8e8);
 
     for (row = 0; row < THUMB_HEIGHT; ++row) {
         for (column = 0; column < THUMB_WIDTH; ++column) {
@@ -412,6 +423,17 @@ static int test_gallery_cells(Display *display, Font *font, DepthLayer layers[2]
         TEST_ASSERT(pixel(&layers[1].buffer, 995, 751) != 0xe8e8e8);
         TEST_ASSERT(pixel(&layers[1].buffer, 995, 751) != 0x404048);
     }
+    gallery_view_draw_cell_anim(display, font, layers, 1, 0, &item);
+    TEST_ASSERT(pixel(&layers[0].buffer, 495, 21) == 0xff500000);
+    TEST_ASSERT(pixel(&layers[0].buffer, 487, 13) == 0);
+    TEST_ASSERT(pixel(&layers[1].buffer, 487, 13) == 0x101014);
+    gallery_view_draw_special_anim(display, layers, 1, 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, play_x - 2, y + THUMB_HEIGHT / 2) == 0xffe8e8e8u);
+    TEST_ASSERT(pixel(&layers[0].buffer, play_x - 1, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, play_x, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, arrow_x, y + THUMB_HEIGHT / 2) == 0xe8e8e8u);
+    TEST_ASSERT(pixel(&layers[0].buffer, x + THUMB_WIDTH / 2 - 9, y + THUMB_HEIGHT / 2) == 0);
+    TEST_ASSERT(pixel(&layers[1].buffer, arrow_x, y + THUMB_HEIGHT / 2) == 0x101014);
     free(reference);
     free(thumbnail);
     return 0;
@@ -559,6 +581,112 @@ static int test_utf8_app_font(Display *display, Font *menu_font, DepthLayer laye
     return 0;
 }
 
+static int layer_row_has_nonzero(const Buffer *buffer, int y, int height)
+{
+    int row;
+    for (row = y; row < y + height; ++row) {
+        const uint32_t *line = (const uint32_t *)(buffer->pixels + (size_t)row * buffer->stride);
+        int column;
+        for (column = 0; column < 1440; ++column) {
+            if (line[column] != 0)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static int test_menu_and_wifi_animations(Display *display, Font *font, DepthLayer layers[2])
+{
+    DepthEffect depth = {0};
+    SystemInfo info = {0};
+    ExternalApp app = {0};
+    WifiNetwork net = {0};
+    const char *values[] = {
+        "Net", "10.0.0.2", "10.0.0.1", "00:11", "22:33",
+        "-50", "5180", "100", "WPA2"
+    };
+    DepthAnim anim;
+    DepthAnimRect rect_a = { 0, 500, 1440, 650, 0.0f };
+    DepthAnimRect rect_b = { 0, 650, 1440, 800, 0.0f };
+    DepthAnimRect rect_c = { 0, 1100, 1440, 1250, 0.0f };
+    int finished = 0;
+    int kx, ky, kw, kh;
+    depth.stereo = 1;
+    depth.front_disparity = 35.0f;
+    depth.back_disparity = -28.0f;
+    app.name = "Music";
+    snprintf(net.display_ssid, sizeof(net.display_ssid), "TestNet");
+    snprintf(net.ssid, sizeof(net.ssid), "TestNet");
+    net.ssid_length = 7;
+    net.signal = -50;
+
+    memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
+    memset(layers[1].buffer.pixels, 0, layers[1].buffer.size);
+    text_op_count = 0;
+    menu_view_draw_row_anim(display, font, &depth, layers, PAGE_MAIN, 0, 0, 0, &info);
+    menu_view_draw_row_anim(display, font, &depth, layers, PAGE_MAIN, 0, 1, 1, &info);
+    TEST_ASSERT(text_op_count == 2);
+    TEST_ASSERT(text_ops[0].color == 0xffd8d8d8 && text_ops[0].bold == 0);
+    TEST_ASSERT(text_ops[1].color == 0xff101014 && text_ops[1].bold == 1);
+    {
+        int row_height = (int)display->mode.vdisplay / 17;
+        int start_y = ((int)display->mode.vdisplay - row_height * 6) / 2;
+        TEST_ASSERT(layer_row_has_nonzero(&layers[0].buffer, start_y, row_height));
+        TEST_ASSERT(!layer_row_has_nonzero(&layers[1].buffer, start_y, row_height * 2));
+    }
+
+    text_op_count = 0;
+    apps_view_draw_row_anim(display, font, &depth, layers, 0, 1130, 0, NULL);
+    apps_view_draw_row_anim(display, font, &depth, layers, 1, 1280, 1, &app);
+    TEST_ASSERT(text_op_count == 2);
+    TEST_ASSERT(text_ops[0].color == 0xffd8d8d8 && text_ops[0].bold == 0);
+    TEST_ASSERT(text_ops[1].color == 0xff101014 && text_ops[1].bold == 1);
+    TEST_ASSERT(!layer_row_has_nonzero(&layers[1].buffer, 1130, APPS_ROW_HEIGHT * 2));
+
+    text_op_count = 0;
+    wifi_view_draw_network_row_anim(display, font, &depth, layers, 2, 360, 0, 0,
+                                     &net, "Other", 5);
+    wifi_view_draw_details_row_anim(display, font, &depth, layers, 1, 510, 1, 0, values);
+    TEST_ASSERT(text_op_count == 2);
+    TEST_ASSERT(text_ops[0].color == 0xffd8d8d8 && text_ops[0].bold == 0);
+    TEST_ASSERT(text_ops[1].color == 0xff101014 && text_ops[1].bold == 1);
+    TEST_ASSERT(layer_row_has_nonzero(&layers[0].buffer, 360, WIFI_ROW_HEIGHT));
+    TEST_ASSERT(!layer_row_has_nonzero(&layers[1].buffer, 360, WIFI_ROW_HEIGHT * 2));
+
+    wifi_view_draw_password_key_anim(display, font, &depth, layers, 30, 0, 1);
+    wifi_view_key_geometry(display, 30, &kx, &ky, &kw, &kh);
+    TEST_ASSERT(pixel(&layers[0].buffer, kx + 2, ky + 2) == 0xffffffffu);
+    TEST_ASSERT(pixel(&layers[1].buffer, kx + 2, ky + 2) == 0u);
+
+    wifi_view_draw_password_back_anim(display, font, &depth, layers, 1);
+    TEST_ASSERT(pixel(&layers[0].buffer, 10, 25 + 10) == 0xffe8e8e8u);
+    TEST_ASSERT(pixel(&layers[1].buffer, 10, 25 + 10) == 0u);
+    wifi_view_draw_password_back_anim(display, font, &depth, layers, 0);
+    TEST_ASSERT(pixel(&layers[0].buffer, 10, 25 + 10) == 0u);
+    TEST_ASSERT(pixel(&layers[1].buffer, 10, 25 + 10) == 0u);
+
+    memset(&anim, 0, sizeof(anim));
+    depth_anim_set_clips(&anim, display, &depth, &rect_a, &rect_b);
+    TEST_ASSERT(anim.clip_count == 1);
+    TEST_ASSERT(anim.clip_y[0] == 500 && anim.clip_h[0] == 300);
+    depth_anim_set_clips(&anim, display, &depth, &rect_a, &rect_c);
+    TEST_ASSERT(anim.clip_count == 2);
+
+    depth_fake_reset();
+    depth_anim_start(&anim, display, &depth, 0, 1, &rect_a, &rect_b,
+                     650, 792, 99, depth.front_disparity, depth.back_disparity);
+    TEST_ASSERT(depth_anim_step(&anim, display, &depth, layers, NULL, &finished) == 0);
+    TEST_ASSERT(!finished);
+    TEST_ASSERT(depth_fake.anim_region_calls == 1 && depth_fake.present_calls == 1);
+    TEST_ASSERT(depth_fake.last_bar_top == 650 && depth_fake.last_bar_bottom == 792);
+    anim.started -= 1.0;
+    TEST_ASSERT(depth_anim_step(&anim, display, &depth, layers, NULL, &finished) == 0);
+    TEST_ASSERT(finished);
+    TEST_ASSERT(anim.cur_old_disparity == depth.back_disparity);
+    TEST_ASSERT(anim.cur_new_disparity == depth.front_disparity);
+    return 0;
+}
+
 int main(void)
 {
     const char *font_path = getenv("LKG_TEST_FONT");
@@ -617,6 +745,9 @@ int main(void)
         ++tests_failed;
     ++tests_run;
     if (test_utf8_app_font(&display, &font, layers, font_path) != 0)
+        ++tests_failed;
+    ++tests_run;
+    if (test_menu_and_wifi_animations(&display, &font, layers) != 0)
         ++tests_failed;
     free(layers[0].buffer.pixels);
     free(layers[1].buffer.pixels);

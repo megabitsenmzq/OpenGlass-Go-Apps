@@ -38,6 +38,7 @@
 #include "serial_parser.h"
 #include "wifi.h"
 #include "depth.h"
+#include "depth_anim.h"
 #include "depth_frame.h"
 #include "thumbnail.h"
 #include "ui.h"
@@ -474,6 +475,167 @@ static void draw_file_manager(Display *display, Font *font, const DepthEffect *d
     file_manager_view_draw(display, font, depth, layers, info.ip);
 }
 
+static uint64_t menu_content_key(int page, int has_apps, int menu_3d)
+{
+    return ((uint64_t)page << 3) |
+           ((uint64_t)(menu_3d & 3) << 1) |
+           (uint64_t)(has_apps ? 1 : 0);
+}
+
+static void menu_row_bounds(const Display *display, int page, int has_apps,
+                            int row, DepthAnimRect *rect)
+{
+    const char **items;
+    int count;
+    const int row_height = (int)display->mode.vdisplay / 17;
+    int start_y;
+    int y;
+    menu_items(page, has_apps, &items, &count);
+    start_y = ((int)display->mode.vdisplay - row_height * count) / 2;
+    y = start_y + row * row_height;
+    rect->x0 = 0;
+    rect->y0 = y;
+    rect->x1 = (int)display->mode.hdisplay;
+    rect->y1 = y + row_height;
+    rect->disparity = 0.0f;
+}
+
+static int menu_anim_settle_row(Display *display, Font *font, const DepthEffect *depth,
+                                DepthLayer layers[2], int page, int has_apps,
+                                int row, int selected, const SystemInfo *info)
+{
+    DepthAnimRect rect;
+    menu_row_bounds(display, page, has_apps, row, &rect);
+    menu_view_draw_row(display, font, depth, layers, page, has_apps, row, selected, info);
+    return depth_anim_upload_rect(display, depth, layers,
+                                  rect.x0, rect.y0,
+                                  rect.x1 - rect.x0, rect.y1 - rect.y0);
+}
+
+static int menu_anim_finish(Display *display, Font *font, const DepthEffect *depth,
+                            DepthLayer layers[2], DepthCacheState *cache_state,
+                            DepthAnim *anim, int page, int has_apps,
+                            int selected, const SystemInfo *info)
+{
+    if (!anim->active)
+        return 0;
+    if (menu_anim_settle_row(display, font, depth, layers, page, has_apps,
+                             anim->old_id, selected, info) != 0)
+        return -1;
+    depth_cache_commit(depth, cache_state, anim->content_key);
+    anim->active = 0;
+    return 0;
+}
+
+static void menu_anim_cancel(Display *display, Font *font, const DepthEffect *depth,
+                             DepthLayer layers[2], DepthCacheState *cache_state,
+                             DepthAnim *anim, int page, int has_apps, int menu_3d,
+                             int selected, const SystemInfo *info)
+{
+    uint64_t key = menu_content_key(page, has_apps, menu_3d);
+    if (!anim->active)
+        return;
+    if (cache_state->initialized && anim->content_key == key) {
+        int i;
+        if (menu_anim_settle_row(display, font, depth, layers, page, has_apps,
+                                 anim->old_id, selected, info) == 0) {
+            anim->new_rect.disparity = depth->front_disparity;
+            for (i = 0; i < anim->clip_count; ++i) {
+                if (depth_gallery_anim_region(display, depth, layers,
+                                              &anim->new_rect, NULL,
+                                              anim->clip_x[i], anim->clip_y[i],
+                                              anim->clip_w[i], anim->clip_h[i],
+                                              anim->bar_top, anim->bar_bottom) != 0) {
+                    anim->active = 0;
+                    return;
+                }
+            }
+            depth_cache_commit(depth, cache_state, key);
+        }
+    }
+    anim->active = 0;
+}
+
+static int menu_anim_step(Display *display, Font *font, const DepthEffect *depth,
+                          DepthLayer layers[2], DepthCacheState *cache_state,
+                          DepthAnim *anim, int page, int has_apps,
+                          int selected, const SystemInfo *info)
+{
+    int finished = 0;
+    if (!anim->active)
+        return 0;
+    if (depth_anim_step(anim, display, depth, layers, "Menu", &finished) != 0)
+        return -1;
+    if (finished)
+        return menu_anim_finish(display, font, depth, layers, cache_state,
+                                anim, page, has_apps, selected, info);
+    return 0;
+}
+
+static int menu_anim_begin(Display *display, Font *font, const DepthEffect *depth,
+                           DepthLayer layers[2], DepthCacheState *cache_state,
+                           DepthAnim *anim, int page, int has_apps, int menu_3d,
+                           int cached_page, int old_row, int new_row,
+                           const SystemInfo *info)
+{
+    uint64_t key = menu_content_key(page, has_apps, menu_3d);
+    const int row_height = (int)display->mode.vdisplay / 17;
+    float old_start = depth->front_disparity;
+    float new_start = depth->back_disparity;
+    DepthAnimRect old_rect;
+    DepthAnimRect new_rect;
+    if (page == PAGE_FILE_MANAGER || !depth->stereo ||
+        !depth_gallery_direct_upload(display, depth) ||
+        cached_page != page || old_row < 0 || old_row == new_row ||
+        (!anim->active ? depth_cache_needs_full(depth, cache_state, key)
+                       : (!cache_state->initialized || cache_state->content_key != key)))
+        return 0;
+    if (anim->active) {
+        DepthAnim prev = *anim;
+        if (old_row == prev.new_id)
+            old_start = prev.cur_new_disparity;
+        if (new_row == prev.old_id)
+            new_start = prev.cur_old_disparity;
+        if (prev.old_id != old_row && prev.old_id != new_row) {
+            int cx, cy, cw, ch;
+            if (menu_anim_settle_row(display, font, depth, layers, page, has_apps,
+                                     prev.old_id, new_row, info) != 0)
+                return -1;
+            depth_anim_clip_rect(display, depth,
+                                 prev.old_rect.x0, prev.old_rect.y0,
+                                 prev.old_rect.x1 - prev.old_rect.x0,
+                                 prev.old_rect.y1 - prev.old_rect.y0,
+                                 &cx, &cy, &cw, &ch);
+            if (cw > 0 && ch > 0 &&
+                depth_gallery_anim_region(display, depth, layers, NULL, NULL,
+                                          cx, cy, cw, ch, 0, 0) != 0)
+                return -1;
+        }
+        anim->active = 0;
+    }
+    menu_row_bounds(display, page, has_apps, old_row, &old_rect);
+    menu_row_bounds(display, page, has_apps, new_row, &new_rect);
+    menu_view_draw_row_anim(display, font, depth, layers, page, has_apps, old_row, 0, info);
+    menu_view_draw_row_anim(display, font, depth, layers, page, has_apps, new_row, 1, info);
+    if (depth_anim_upload_rect(display, depth, layers,
+                               old_rect.x0, old_rect.y0,
+                               old_rect.x1 - old_rect.x0,
+                               old_rect.y1 - old_rect.y0) != 0 ||
+        depth_anim_upload_rect(display, depth, layers,
+                               new_rect.x0, new_rect.y0,
+                               new_rect.x1 - new_rect.x0,
+                               new_rect.y1 - new_rect.y0) != 0)
+        return -1;
+    depth_anim_start(anim, display, depth, old_row, new_row,
+                     &old_rect, &new_rect,
+                     new_rect.y0, new_rect.y0 + row_height - 8,
+                     key, old_start, new_start);
+    if (menu_anim_step(display, font, depth, layers, cache_state,
+                       anim, page, has_apps, new_row, info) != 0)
+        return -1;
+    return 1;
+}
+
 static int draw_menu(Display *display, Font *font, int page, int has_apps,
                      int menu_3d, int selected, int previous_selected,
                      SystemInfo *info, const DepthEffect *depth,
@@ -487,9 +649,7 @@ static int draw_menu(Display *display, Font *font, int page, int has_apps,
     int start_y;
     int result = 0;
     int i;
-    uint64_t content_key = ((uint64_t)page << 3) |
-                           ((uint64_t)(menu_3d & 3) << 1) |
-                           (uint64_t)(has_apps ? 1 : 0);
+    uint64_t content_key = menu_content_key(page, has_apps, menu_3d);
     if (depth_frame_begin(&frame, display, depth, layers, cache_state, content_key, 0) != 0)
         return -1;
     if (page == PAGE_FILE_MANAGER) {
@@ -830,6 +990,7 @@ int main(int argc, char **argv)
     DepthLayer layers[2];
     UsbKeyboard keyboard;
     DepthCacheState cache_state = {0};
+    DepthAnim menu_anim = {0};
     SystemInfo info;
     struct pollfd pfd[2];
     struct sigaction action;
@@ -842,6 +1003,7 @@ int main(int argc, char **argv)
     int has_apps = 0;
     int selected = 0;
     int changed = 1;
+    int cached_page = -1;
     int cached_selected = -1;
     int slideshow_duration;
     int button_reversed;
@@ -892,11 +1054,13 @@ initialize_menu:
     memset(&display, 0, sizeof(display));
     display.fd = -1;
     memset(&cache_state, 0, sizeof(cache_state));
+    memset(&menu_anim, 0, sizeof(menu_anim));
     requested_action = ACTION_NONE;
     page = PAGE_MAIN;
     has_apps = apps_scan_has_apps(apps_dir);
     selected = 0;
     changed = 1;
+    cached_page = -1;
     cached_selected = -1;
     message_length = 0;
     if (display_open(&display, drm_path) != 0) {
@@ -969,13 +1133,33 @@ menu_loop:
         else if (page != PAGE_FILE_MANAGER && dufs_pid > 0)
             stop_dufs(&dufs_pid);
         if (changed) {
-            if (draw_menu(&display, &font, page, has_apps, menu_3d, selected,
-                          cached_selected, &info, &depth, &cache_state, layers) != 0) {
+            int anim_result = menu_anim_begin(&display, &font, &depth, layers,
+                                              &cache_state, &menu_anim, page,
+                                              has_apps, menu_3d, cached_page,
+                                              cached_selected, selected, &info);
+            if (anim_result < 0) {
                 fprintf(stderr, "Display update failed: %s\n", strerror(errno));
                 break;
             }
+            if (anim_result == 0) {
+                menu_anim_cancel(&display, &font, &depth, layers, &cache_state,
+                                 &menu_anim, page, has_apps, menu_3d,
+                                 selected, &info);
+                if (draw_menu(&display, &font, page, has_apps, menu_3d, selected,
+                              cached_selected, &info, &depth, &cache_state, layers) != 0) {
+                    fprintf(stderr, "Display update failed: %s\n", strerror(errno));
+                    break;
+                }
+            }
+            cached_page = page;
             cached_selected = selected;
             changed = 0;
+        } else if (menu_anim.active) {
+            if (menu_anim_step(&display, &font, &depth, layers, &cache_state,
+                               &menu_anim, page, has_apps, selected, &info) != 0) {
+                fprintf(stderr, "Display update failed: %s\n", strerror(errno));
+                break;
+            }
         }
         {
             char command[16];
@@ -991,7 +1175,7 @@ menu_loop:
             }
         }
         pfd[1].fd = keyboard.fd;
-        if (poll(pfd, 2, 100) < 0) {
+        if (poll(pfd, 2, menu_anim.active ? 0 : 100) < 0) {
             if (errno == EINTR)
                 continue;
             fprintf(stderr, "poll failed: %s\n", strerror(errno));
@@ -1016,6 +1200,7 @@ menu_loop:
     }
     stop_dufs(&dufs_pid);
     volume_preview_stop();
+    menu_anim.active = 0;
     if (requested_action == ACTION_APPS) {
         int apps_result = apps_run(&display, &font, &depth, layers, serial_fd, &keyboard,
                                    button_reversed, apps_dir);
@@ -1026,6 +1211,7 @@ menu_loop:
         if (!has_apps && page == PAGE_MAIN && selected >= 6)
             selected = 0;
         cache_state.initialized = 0;
+        cached_page = -1;
         cached_selected = -1;
         changed = 1;
         tcflush(serial_fd, TCIFLUSH);
@@ -1037,6 +1223,9 @@ menu_loop:
                                          slideshow_duration, button_reversed, pending_auto_play);
         pending_auto_play = 0;
         requested_action = action_for_serial_result(gallery_result);
+        cache_state.initialized = 0;
+        cached_page = -1;
+        cached_selected = -1;
         changed = 1;
         tcflush(serial_fd, TCIFLUSH);
         if (running && requested_action == ACTION_NONE)
@@ -1050,6 +1239,9 @@ menu_loop:
             if (prerender_result != 0)
                 fprintf(stderr, "Unable to start batch pre-rendering: %s\n", strerror(errno));
         }
+        cache_state.initialized = 0;
+        cached_page = -1;
+        cached_selected = -1;
         changed = 1;
         tcflush(serial_fd, TCIFLUSH);
         if (running && requested_action == ACTION_NONE)
@@ -1062,6 +1254,9 @@ menu_loop:
             printf("Pre-render cache cleared\n");
         requested_action = ACTION_NONE;
         menu_return_to_parent(&page, &selected, has_apps);
+        cache_state.initialized = 0;
+        cached_page = -1;
+        cached_selected = -1;
         changed = 1;
         tcflush(serial_fd, TCIFLUSH);
         if (running)
@@ -1075,6 +1270,9 @@ menu_loop:
             if (wifi_result != 0)
                 fprintf(stderr, "Wi-Fi settings closed after an input error\n");
         }
+        cache_state.initialized = 0;
+        cached_page = -1;
+        cached_selected = -1;
         changed = 1;
         tcflush(serial_fd, TCIFLUSH);
         if (running && requested_action == ACTION_NONE)

@@ -154,7 +154,9 @@ typedef enum {
     LKG_MSG_TEXT_INPUT,
     LKG_MSG_TEXT_INPUT_REPLY,
     LKG_MSG_REPLY,
-    LKG_MSG_EVENT
+    LKG_MSG_EVENT,
+    LKG_MSG_UPLOAD_RECT,
+    LKG_MSG_ANIM_PRESENT
 } LkgMsgType;
 
 typedef struct {
@@ -235,5 +237,36 @@ typedef struct {
 typedef struct {
     int32_t status;
 } LkgReplyPayload;
+
+typedef struct {
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+} LkgUploadRectPayload;
+
+typedef struct {
+    int32_t x0;
+    int32_t y0;
+    int32_t x1;
+    int32_t y1;
+    float disparity;
+} LkgAnimRect;
+
+typedef struct {
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+} LkgClipRect;
+
+typedef struct {
+    uint32_t rect_count;
+    uint32_t clip_count;
+    int32_t bar_top;
+    int32_t bar_bottom;
+    int32_t present;
+    int32_t commit_cache;
+} LkgAnimPresentPayload;
 
 #endif

@@ -24,5 +24,8 @@ void menu_view_draw_page(Display *display, Font *font, const DepthEffect *depth,
 void menu_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
                         DepthLayer layers[2], int page, int has_apps, int row,
                         int selected, const SystemInfo *info);
+void menu_view_draw_row_anim(Display *display, Font *font, const DepthEffect *depth,
+                             DepthLayer layers[2], int page, int has_apps, int row,
+                             int active, const SystemInfo *info);
 
 #endif

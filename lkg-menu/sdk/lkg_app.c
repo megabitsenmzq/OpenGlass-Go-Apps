@@ -700,3 +700,53 @@ int lkg_app_present_rects(LkgApp *app, const LkgRectUpdate *rects, size_t count)
         return 0;
     return send_present(app, 0, rects, count);
 }
+
+int lkg_app_upload_rect(LkgApp *app, int x, int y, int width, int height)
+{
+    LkgUploadRectPayload payload;
+    if (ensure_hosted(app) != 0)
+        return -1;
+    payload.x = x;
+    payload.y = y;
+    payload.width = width;
+    payload.height = height;
+    return send_message(app, LKG_MSG_UPLOAD_RECT, &payload, sizeof(payload),
+                        NULL, 0, NULL, 0, NULL, 0);
+}
+
+int lkg_app_present_anim(LkgApp *app, const LkgAnimRect *rects, size_t rect_count,
+                         const LkgClipRect *clips, size_t clip_count,
+                         int bar_top, int bar_bottom, int present, int commit_cache)
+{
+    LkgAnimPresentPayload payload;
+    LkgMsgHeader header;
+    uint8_t buffer[LKG_APP_MSG_MAX_PAYLOAD];
+    LkgReplyPayload reply;
+    if (ensure_hosted(app) != 0)
+        return -1;
+    if (rect_count > 2 || clip_count == 0 || clip_count > 2 ||
+        (rect_count > 0 && !rects) || !clips) {
+        errno = EINVAL;
+        return -1;
+    }
+    payload.rect_count = (uint32_t)rect_count;
+    payload.clip_count = (uint32_t)clip_count;
+    payload.bar_top = bar_top;
+    payload.bar_bottom = bar_bottom;
+    payload.present = present ? 1 : 0;
+    payload.commit_cache = commit_cache ? 1 : 0;
+    if (send_message(app, LKG_MSG_ANIM_PRESENT,
+                     &payload, sizeof(payload),
+                     rects, rect_count * sizeof(*rects),
+                     clips, clip_count * sizeof(*clips),
+                     NULL, 0) != 0)
+        return -1;
+    if (wait_reply(app, LKG_MSG_REPLY, &header, buffer, sizeof(buffer)) != 0)
+        return -1;
+    if (header.length < sizeof(reply)) {
+        errno = EPROTO;
+        return -1;
+    }
+    memcpy(&reply, buffer, sizeof(reply));
+    return reply.status;
+}

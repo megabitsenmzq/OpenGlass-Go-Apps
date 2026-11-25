@@ -26,14 +26,13 @@ int apps_view_row_y(const Display *display, int visible_rows, int row, int scrol
     return start_y + (row == 0 ? 0 : (row - scroll) * APPS_ROW_HEIGHT);
 }
 
-void apps_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
-                        DepthLayer layers[2], int row, int y, int selected,
-                        int interactive, const ExternalApp *app)
+static void draw_row_internal(Display *display, Font *font, const DepthEffect *depth,
+                              DepthLayer layers[2], int row, int y, int active,
+                              const ExternalApp *app, int force_front)
 {
     int width = (int)display->mode.hdisplay;
     int margin = width / 12;
-    int active = row == selected && interactive;
-    Buffer *buffer = active ? &layers[0].buffer : &layers[1].buffer;
+    Buffer *buffer = (active || force_front) ? &layers[0].buffer : &layers[1].buffer;
     uint32_t color = active ? 0xff101014 : 0xffd8d8d8;
     int bar_height = APPS_ROW_HEIGHT - 8;
     int baseline;
@@ -49,6 +48,24 @@ void apps_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
                       baseline, color, width - margin * 2 - 24,
                       active && depth->stereo);
     }
+}
+
+void apps_view_draw_row(Display *display, Font *font, const DepthEffect *depth,
+                        DepthLayer layers[2], int row, int y, int selected,
+                        int interactive, const ExternalApp *app)
+{
+    draw_row_internal(display, font, depth, layers, row, y,
+                      row == selected && interactive, app, 0);
+}
+
+void apps_view_draw_row_anim(Display *display, Font *font, const DepthEffect *depth,
+                             DepthLayer layers[2], int row, int y, int active,
+                             const ExternalApp *app)
+{
+    int width = (int)display->mode.hdisplay;
+    draw_rect(display, &layers[0].buffer, 0, y, width, APPS_ROW_HEIGHT, 0);
+    draw_rect(display, &layers[1].buffer, 0, y, width, APPS_ROW_HEIGHT, 0);
+    draw_row_internal(display, font, depth, layers, row, y, active, app, 1);
 }
 
 void apps_view_draw_text_input(Display *display, Font *font, const DepthEffect *depth,

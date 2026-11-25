@@ -1,6 +1,7 @@
 #ifndef LKG_MENU_WIFI_INTERNAL_H
 #define LKG_MENU_WIFI_INTERNAL_H
 
+#include "depth_anim.h"
 #include "depth_frame.h"
 #include "wifi_control.h"
 
@@ -28,6 +29,8 @@ typedef struct {
     int cached_selected;
     int cached_scroll;
     DepthCacheState cache_state;
+    DepthAnim anim;
+    WifiPage anim_page;
     int keyboard_layout;
     int key_selected;
     int back_selected;
