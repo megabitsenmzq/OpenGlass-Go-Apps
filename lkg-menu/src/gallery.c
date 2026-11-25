@@ -248,7 +248,20 @@ static void gallery_selected_slot(const Gallery *gallery, int *cell_out, int *sl
     gallery_cursor_slot(gallery->page, gallery->cursor, cell_out, slot_out);
 }
 
-static void gallery_cell_patch_rect(Display *display, int cell,
+static int gallery_anim_margin(const DepthEffect *depth)
+{
+    float front = depth->front_disparity < 0.0f ?
+                  -depth->front_disparity : depth->front_disparity;
+    float back = depth->back_disparity < 0.0f ?
+                 -depth->back_disparity : depth->back_disparity;
+    float maximum = front > back ? front : back;
+    int margin = (int)maximum;
+    if ((float)margin < maximum)
+        ++margin;
+    return margin + 2;
+}
+
+static void gallery_cell_patch_rect(Display *display, const DepthEffect *depth, int cell,
                                     int *patch_x, int *patch_y,
                                     int *patch_w, int *patch_h,
                                     int *src_x, int *src_w)
@@ -260,9 +273,9 @@ static void gallery_cell_patch_rect(Display *display, int cell,
     const int cell_height = (screen_h - grid_y - 50) / 3;
     const int x = (cell % 3) * cell_width + (cell_width - THUMB_WIDTH) / 2;
     const int y = grid_y + (cell / 3) * cell_height + (cell_height - THUMB_HEIGHT) / 2;
-    /* Covers thumbnail + 8px white selection border + +/-71px horizontal disparity */
-    int px0 = x - 79;
-    int px1 = x + THUMB_WIDTH + 79;
+    int margin = gallery_anim_margin(depth);
+    int px0 = x - 8 - margin;
+    int px1 = x + THUMB_WIDTH + 8 + margin;
     int py0 = y - 8;
     int py1 = y + THUMB_HEIGHT + 8;
     int sx0;
@@ -275,8 +288,8 @@ static void gallery_cell_patch_rect(Display *display, int cell,
         py0 = 0;
     if (py1 > screen_h)
         py1 = screen_h;
-    sx0 = px0 - 79;
-    sx1 = px1 + 79;
+    sx0 = px0 - margin;
+    sx1 = px1 + margin;
     if (sx0 < 0)
         sx0 = 0;
     if (sx1 > screen_w)
@@ -448,7 +461,7 @@ static int gallery_bake_next(Display *display, Font *font, Gallery *gallery)
                 return 0;
             band = 0;
         }
-        gallery_cell_patch_rect(display, cell, &patch_x, &patch_y,
+        gallery_cell_patch_rect(display, gallery->depth, cell, &patch_x, &patch_y,
                                 &patch_w, &patch_h, &src_x, &src_w);
         band_count = (patch_h + GALLERY_BAKE_BAND_HEIGHT - 1) /
                      GALLERY_BAKE_BAND_HEIGHT;
@@ -632,11 +645,12 @@ static int gallery_sync_dirty_gpu_cells(Display *display, Gallery *gallery,
     return 0;
 }
 
-static void gallery_anim_set_clips(Display *display, GalleryAnim *anim)
+static void gallery_anim_set_clips(Display *display, const DepthEffect *depth, GalleryAnim *anim)
 {
     int px0, py0, pw0, ph0, sx0, sw0;
     int px1, py1, pw1, ph1, sx1, sw1;
-    gallery_cell_patch_rect(display, anim->old_cell, &px0, &py0, &pw0, &ph0, &sx0, &sw0);
+    gallery_cell_patch_rect(display, depth, anim->old_cell,
+                            &px0, &py0, &pw0, &ph0, &sx0, &sw0);
     if (anim->old_cell == anim->new_cell) {
         anim->clip_count = 1;
         anim->clip_x[0] = px0;
@@ -645,7 +659,8 @@ static void gallery_anim_set_clips(Display *display, GalleryAnim *anim)
         anim->clip_h[0] = ph0;
         return;
     }
-    gallery_cell_patch_rect(display, anim->new_cell, &px1, &py1, &pw1, &ph1, &sx1, &sw1);
+    gallery_cell_patch_rect(display, depth, anim->new_cell,
+                            &px1, &py1, &pw1, &ph1, &sx1, &sw1);
     if (anim->old_cell / 3 == anim->new_cell / 3 &&
         px0 < px1 + pw1 && px1 < px0 + pw0) {
         int rx0 = px0 < px1 ? px0 : px1;
@@ -811,7 +826,8 @@ static int gallery_anim_begin(Display *display, Font *font, Gallery *gallery,
             if (gallery_upload_cell(display, gallery, prev.old_cell) != 0)
                 return -1;
             gallery->cache.cells[prev.old_cell].selected = 0;
-            gallery_cell_patch_rect(display, prev.old_cell, &px, &py, &pw, &ph, &sx, &sw);
+            gallery_cell_patch_rect(display, gallery->depth, prev.old_cell,
+                                    &px, &py, &pw, &ph, &sx, &sw);
             if (depth_gallery_anim_region(display, gallery->depth, layers,
                                           NULL, NULL, px, py, pw, ph, 0, 0, 1) != 0)
                 return -1;
@@ -873,7 +889,7 @@ static int gallery_anim_begin(Display *display, Font *font, Gallery *gallery,
     gallery_cell_bounds(display, new_cell, 1,
                         gallery->page == 0 && new_cell == 0, new_slot,
                         &gallery->anim.new_rect);
-    gallery_anim_set_clips(display, &gallery->anim);
+    gallery_anim_set_clips(display, gallery->depth, &gallery->anim);
     gallery->cache.cursor = new_cursor;
     gallery->cache.displayed_cached = 0;
     gallery->cache.bake_active = 0;
@@ -895,12 +911,14 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
     DepthFrame frame;
     int full;
     int cached = 0;
+    int cached_unchanged = 0;
     int region_x0[9];
     int region_y0[9];
     int region_x1[9];
     int region_y1[9];
     int region_count = 0;
     int cell;
+    int anim_margin = gallery_anim_margin(gallery->depth);
     if (!gallery->cache.layers || !gallery->cache.layers[0].buffer.pixels ||
         !gallery->cache.layers[1].buffer.pixels)
         return -1;
@@ -959,6 +977,9 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
             }
         }
         cached = !full && gallery_cache_ready(gallery);
+        cached_unchanged = cached && gallery->cache.displayed_cached &&
+                           gallery->cache.page == gallery->page &&
+                           gallery->cache.cursor == gallery->cursor;
         if (!cached && gallery->cache.displayed_cached) {
             int previous_cell = gallery->cache.page == 0 ?
                                 (gallery->cache.cursor < 2 ? 0 : gallery->cache.cursor - 1) :
@@ -988,9 +1009,9 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
                 if (cell / 3 == 2)
                     bottom_row_dirty = 1;
                 if (!full) {
-                    region_x0[region_count] = x - 79;
+                    region_x0[region_count] = x - 8 - anim_margin;
                     region_y0[region_count] = y - 8;
-                    region_x1[region_count] = x + THUMB_WIDTH + 79;
+                    region_x1[region_count] = x + THUMB_WIDTH + 8 + anim_margin;
                     region_y1[region_count] = y + THUMB_HEIGHT + 8;
                     ++region_count;
                 }
@@ -1012,7 +1033,7 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
                 return -1;
         }
     }
-    if (cached) {
+    if (cached && !cached_unchanged) {
         int selected_cell;
         int selected_slot;
         gallery_selected_slot(gallery, &selected_cell, &selected_slot);
@@ -1035,8 +1056,9 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
                 int y0 = region_y0[region] < 0 ? 0 : region_y0[region];
                 int x1 = region_x1[region] > display->mode.hdisplay ? display->mode.hdisplay : region_x1[region];
                 int y1 = region_y1[region] > display->mode.vdisplay ? display->mode.vdisplay : region_y1[region];
-                int source_x0 = x0 - 79 > 0 ? x0 - 79 : 0;
-                int source_x1 = x1 + 79 < display->mode.hdisplay ? x1 + 79 : display->mode.hdisplay;
+                int source_x0 = x0 - anim_margin > 0 ? x0 - anim_margin : 0;
+                int source_x1 = x1 + anim_margin < display->mode.hdisplay ?
+                                x1 + anim_margin : display->mode.hdisplay;
                 if (x1 <= x0 || y1 <= y0)
                     continue;
                 if (direct_upload && pass == 0) {
@@ -1078,7 +1100,7 @@ int gallery_draw(Display *display, Font *font, Gallery *gallery)
     {
         int result;
         frame.defer_cache_commit = 1;
-        if (cached || profile_regions > 0) {
+        if ((cached && !cached_unchanged) || profile_regions > 0) {
             result = depth_frame_present(&frame);
         } else {
             result = frame.failed ? -1 : 0;
