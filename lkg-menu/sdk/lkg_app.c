@@ -752,3 +752,48 @@ int lkg_app_present_anim(LkgApp *app, const LkgAnimRect *rects, size_t rect_coun
     memcpy(&reply, buffer, sizeof(reply));
     return reply.status;
 }
+
+int lkg_app_present_anim_scroll(LkgApp *app, const LkgAnimRect *rects, size_t rect_count,
+                                const LkgClipRect *clips, size_t clip_count,
+                                int bar_top, int bar_bottom, int has_back,
+                                float scroll_y, int scroll_limit_y, int source_max_y,
+                                int clear_cache, int present, int commit_cache)
+{
+    LkgAnimScrollPresentPayload payload;
+    LkgMsgHeader header;
+    uint8_t buffer[LKG_APP_MSG_MAX_PAYLOAD];
+    LkgReplyPayload reply;
+    if (ensure_hosted(app) != 0)
+        return -1;
+    if (rect_count > 2 || clip_count == 0 || clip_count > 2 ||
+        (rect_count > 0 && !rects) || !clips ||
+        scroll_limit_y < 0 || source_max_y < 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    payload.rect_count = (uint32_t)rect_count;
+    payload.clip_count = (uint32_t)clip_count;
+    payload.bar_top = bar_top;
+    payload.bar_bottom = bar_bottom;
+    payload.has_back = has_back ? 1 : 0;
+    payload.present = present ? 1 : 0;
+    payload.commit_cache = commit_cache ? 1 : 0;
+    payload.clear_cache = clear_cache ? 1 : 0;
+    payload.scroll_y = scroll_y;
+    payload.scroll_limit_y = scroll_limit_y;
+    payload.source_max_y = source_max_y;
+    if (send_message(app, LKG_MSG_ANIM_SCROLL_PRESENT,
+                     &payload, sizeof(payload),
+                     rects, rect_count * sizeof(*rects),
+                     clips, clip_count * sizeof(*clips),
+                     NULL, 0) != 0)
+        return -1;
+    if (wait_reply(app, LKG_MSG_REPLY, &header, buffer, sizeof(buffer)) != 0)
+        return -1;
+    if (header.length < sizeof(reply)) {
+        errno = EPROTO;
+        return -1;
+    }
+    memcpy(&reply, buffer, sizeof(reply));
+    return reply.status;
+}

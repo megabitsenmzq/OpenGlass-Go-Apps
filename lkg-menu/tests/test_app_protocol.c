@@ -33,9 +33,14 @@ typedef struct {
     int saw_present_rects;
     int saw_upload_rect;
     int saw_anim_present;
+    int saw_anim_scroll_present;
     int32_t last_anim_bar_top;
     int32_t last_anim_bar_bottom;
     int32_t last_anim_has_back;
+    float last_scroll_y;
+    int32_t last_scroll_limit_y;
+    int32_t last_source_max_y;
+    int32_t last_clear_cache;
     uint32_t last_rect_color;
     float last_front_depth;
     float last_back_depth;
@@ -267,6 +272,24 @@ static void *mock_host_thread(void *arg)
                 host->failed = 1;
                 break;
             }
+        } else if (hdr.type == LKG_MSG_ANIM_SCROLL_PRESENT) {
+            LkgAnimScrollPresentPayload p;
+            LkgReplyPayload reply;
+            memcpy(&p, buf, sizeof(p));
+            host->last_anim_bar_top = p.bar_top;
+            host->last_anim_bar_bottom = p.bar_bottom;
+            host->last_anim_has_back = p.has_back;
+            host->last_scroll_y = p.scroll_y;
+            host->last_scroll_limit_y = p.scroll_limit_y;
+            host->last_source_max_y = p.source_max_y;
+            host->last_clear_cache = p.clear_cache;
+            ++host->saw_anim_scroll_present;
+            reply.status = 0;
+            if (mock_send_frame(host->host_fd, LKG_MSG_REPLY, hdr.seq,
+                                &reply, sizeof(reply), NULL, 0) != 0) {
+                host->failed = 1;
+                break;
+            }
         } else if (hdr.type == LKG_MSG_TEXT_INPUT) {
             LkgTextInputReplyPayload reply;
             ++host->text_input_calls;
@@ -440,6 +463,9 @@ int test_app_protocol(void)
                                          100, 242, 0, 0, 0) == 0);
         TEST_ASSERT(lkg_app_present_anim(app, &anim_rect, 1, &clip_rect, 1,
                                          100, 242, 1, 1, 1) == 0);
+        TEST_ASSERT(lkg_app_present_anim_scroll(app, &anim_rect, 1, &clip_rect, 1,
+                                                0, 0, 1, 42.5f, 2325, 2395,
+                                                1, 1, 1) == 0);
     }
 
     TEST_ASSERT(lkg_app_text_input(app, "Edit Greeting", "Init", input_buf, sizeof(input_buf)) == 1);
@@ -465,8 +491,11 @@ int test_app_protocol(void)
     TEST_ASSERT(host.saw_present_rects == 1);
     TEST_ASSERT(host.saw_upload_rect == 1);
     TEST_ASSERT(host.saw_anim_present == 2);
-    TEST_ASSERT(host.last_anim_bar_top == 100 && host.last_anim_bar_bottom == 242 &&
-                host.last_anim_has_back == 1);
+    TEST_ASSERT(host.saw_anim_scroll_present == 1);
+    TEST_ASSERT(host.last_anim_bar_top == 0 && host.last_anim_bar_bottom == 0 &&
+                host.last_anim_has_back == 1 && host.last_scroll_y == 42.5f &&
+                host.last_scroll_limit_y == 2325 && host.last_source_max_y == 2395 &&
+                host.last_clear_cache == 1);
     TEST_ASSERT(host.text_input_calls == 2);
 
     for (i = 0; i < 2; ++i) {

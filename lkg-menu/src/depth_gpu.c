@@ -80,6 +80,9 @@ typedef struct {
     GLint inv_view;
     GLint flip_subp;
     GLint has_back;
+    GLint scroll_y;
+    GLint scroll_limit_y;
+    GLint source_max_y;
 } DepthAnimUniforms;
 
 struct DepthGpu {
@@ -260,45 +263,56 @@ static const char *anim_fragment_source =
     "uniform int u_inv_view;\n"
     "uniform int u_flip_subp;\n"
     "uniform int u_has_back;\n"
+    "uniform float u_scroll_y;\n"
+    "uniform float u_scroll_limit_y;\n"
+    "uniform float u_source_max_y;\n"
     "vec3 base_color(vec2 source) {\n"
     "  if (source.y >= u_bar_range.x && source.y < u_bar_range.y)\n"
     "    return vec3(232.0 / 255.0);\n"
     "  return vec3(16.0 / 255.0, 16.0 / 255.0, 20.0 / 255.0);\n"
     "}\n"
-    "vec4 sample_bounded(sampler2D image, float disp, vec4 bounds, float angle, vec2 source) {\n"
-    "  if (bounds.z <= bounds.x || source.y < bounds.y || source.y >= bounds.w)\n"
-    "    return vec4(0.0);\n"
-    "  float lx = source.x + disp * angle;\n"
+    "vec4 sample_bounded_x(sampler2D image, float disp, vec4 bounds, float angle, vec2 sample_pos) {\n"
+    "  float lx = sample_pos.x + disp * angle;\n"
+    "  if (lx >= bounds.x && lx <= bounds.z - 1.0)\n"
+    "    return texture2D(image, vec2(lx + 0.5, sample_pos.y + 0.5) * u_inv_resolution);\n"
     "  if (lx <= bounds.x - 1.0 || lx >= bounds.z)\n"
     "    return vec4(0.0);\n"
     "  float sx = clamp(lx, bounds.x, bounds.z - 1.0);\n"
     "  float w = min(1.0, min(lx - bounds.x + 1.0, bounds.z - lx));\n"
-    "  return texture2D(image, vec2(sx + 0.5, source.y + 0.5) * u_inv_resolution) * w;\n"
+    "  return texture2D(image, vec2(sx + 0.5, sample_pos.y + 0.5) * u_inv_resolution) * w;\n"
     "}\n"
-    "vec4 sample_back(float angle, vec2 source) {\n"
-    "  float lx = source.x + u_back_disparity * angle;\n"
+    "vec4 sample_back(float angle, vec2 sample_pos) {\n"
+    "  float lx = sample_pos.x + u_back_disparity * angle;\n"
+    "  if (lx >= 0.0 && lx <= u_resolution.x - 1.0)\n"
+    "    return texture2D(u_layer1, vec2(lx + 0.5, sample_pos.y + 0.5) * u_inv_resolution);\n"
     "  if (lx <= -1.0 || lx >= u_resolution.x)\n"
     "    return vec4(0.0);\n"
     "  float sx = clamp(lx, 0.0, u_resolution.x - 1.0);\n"
     "  float w = min(1.0, min(lx + 1.0, u_resolution.x - lx));\n"
-    "  return texture2D(u_layer1, vec2(sx + 0.5, source.y + 0.5) * u_inv_resolution) * w;\n"
+    "  return texture2D(u_layer1, vec2(sx + 0.5, sample_pos.y + 0.5) * u_inv_resolution) * w;\n"
     "}\n"
-    "vec3 composite_anim(float angle, vec2 source, vec3 base) {\n"
-    "  vec4 top = sample_bounded(u_layer0, u_first_disparity, u_first_bounds, angle, source);\n"
-    "  if (top.a >= 0.999)\n"
-    "    return top.rgb;\n"
-    "  vec3 color = top.rgb;\n"
-    "  float rem = 1.0 - top.a;\n"
-    "  vec4 mid = sample_bounded(u_layer0, u_second_disparity, u_second_bounds, angle, source);\n"
-    "  if (mid.a > 0.0) {\n"
-    "    color += mid.rgb * rem;\n"
-    "    rem *= (1.0 - mid.a);\n"
-    "    if (rem <= 0.001)\n"
-    "      return color;\n"
+    "vec3 composite_anim(float angle, vec2 sample_pos, vec3 base, bool in_first_y, bool in_second_y) {\n"
+    "  vec3 color = vec3(0.0);\n"
+    "  float rem = 1.0;\n"
+    "  if (in_first_y) {\n"
+    "    vec4 top = sample_bounded_x(u_layer0, u_first_disparity, u_first_bounds, angle, sample_pos);\n"
+    "    if (top.a >= 0.999)\n"
+    "      return top.rgb;\n"
+    "    color = top.rgb;\n"
+    "    rem = 1.0 - top.a;\n"
+    "  }\n"
+    "  if (in_second_y) {\n"
+    "    vec4 mid = sample_bounded_x(u_layer0, u_second_disparity, u_second_bounds, angle, sample_pos);\n"
+    "    if (mid.a > 0.0) {\n"
+    "      color += mid.rgb * rem;\n"
+    "      rem *= (1.0 - mid.a);\n"
+    "      if (rem <= 0.001)\n"
+    "        return color;\n"
+    "    }\n"
     "  }\n"
     "  if (u_has_back == 0)\n"
     "    return color + base * rem;\n"
-    "  vec4 bg = sample_back(angle, source);\n"
+    "  vec4 bg = sample_back(angle, sample_pos);\n"
     "  vec3 under = bg.rgb + base * (1.0 - bg.a);\n"
     "  return color + under * rem;\n"
     "}\n"
@@ -306,6 +320,19 @@ static const char *anim_fragment_source =
     "  vec2 frag = gl_FragCoord.xy;\n"
     "  vec2 source = vec2(frag.x - 0.5, u_resolution.y - frag.y - 0.5);\n"
     "  vec3 base = base_color(source);\n"
+    "  bool scrolled = u_scroll_limit_y > 0.0 && source.y < u_scroll_limit_y;\n"
+    "  float sy = scrolled ? source.y + u_scroll_y : source.y;\n"
+    "  if (scrolled && (sy < 0.0 || (u_source_max_y > 0.0 && sy >= u_source_max_y))) {\n"
+    "    gl_FragColor = vec4(base, 1.0);\n"
+    "    return;\n"
+    "  }\n"
+    "  bool in_first_y = u_first_bounds.z > u_first_bounds.x && sy >= u_first_bounds.y && sy < u_first_bounds.w;\n"
+    "  bool in_second_y = u_second_bounds.z > u_second_bounds.x && sy >= u_second_bounds.y && sy < u_second_bounds.w;\n"
+    "  if (!in_first_y && !in_second_y && u_has_back == 0) {\n"
+    "    gl_FragColor = vec4(base, 1.0);\n"
+    "    return;\n"
+    "  }\n"
+    "  vec2 sample_pos = vec2(source.x, sy);\n"
     "  vec2 pixel = frag * u_inv_resolution;\n"
     "  float base_phase = (pixel.x + pixel.y * u_tilt) * u_pitch - u_center + u_fringe;\n"
     "  float sub_step = u_pitch / (3.0 * u_resolution.x);\n"
@@ -315,9 +342,18 @@ static const char *anim_fragment_source =
     "  p0 = u_inv_view != 0 ? 1.0 - fract(p0) : fract(p0);\n"
     "  p1 = u_inv_view != 0 ? 1.0 - fract(p1) : fract(p1);\n"
     "  p2 = u_inv_view != 0 ? 1.0 - fract(p2) : fract(p2);\n"
-    "  vec3 r = composite_anim(2.0 * p0 - 1.0, source, base);\n"
-    "  vec3 g = composite_anim(2.0 * p1 - 1.0, source, base);\n"
-    "  vec3 b = composite_anim(2.0 * p2 - 1.0, source, base);\n"
+    "  if (!in_first_y && !in_second_y && u_has_back != 0) {\n"
+    "    vec4 br = sample_back(2.0 * p0 - 1.0, sample_pos);\n"
+    "    vec4 bg = sample_back(2.0 * p1 - 1.0, sample_pos);\n"
+    "    vec4 bb = sample_back(2.0 * p2 - 1.0, sample_pos);\n"
+    "    gl_FragColor = vec4(br.r + base.r * (1.0 - br.a),\n"
+    "                        bg.g + base.g * (1.0 - bg.a),\n"
+    "                        bb.b + base.b * (1.0 - bb.a), 1.0);\n"
+    "    return;\n"
+    "  }\n"
+    "  vec3 r = composite_anim(2.0 * p0 - 1.0, sample_pos, base, in_first_y, in_second_y);\n"
+    "  vec3 g = composite_anim(2.0 * p1 - 1.0, sample_pos, base, in_first_y, in_second_y);\n"
+    "  vec3 b = composite_anim(2.0 * p2 - 1.0, sample_pos, base, in_first_y, in_second_y);\n"
     "  gl_FragColor = vec4(r.r, g.g, b.b, 1.0);\n"
     "}\n";
 
@@ -1219,17 +1255,21 @@ static int anim_program_init(DepthGpu *gpu)
     u->inv_view = glGetUniformLocation(gpu->anim_program, "u_inv_view");
     u->flip_subp = glGetUniformLocation(gpu->anim_program, "u_flip_subp");
     u->has_back = glGetUniformLocation(gpu->anim_program, "u_has_back");
+    u->scroll_y = glGetUniformLocation(gpu->anim_program, "u_scroll_y");
+    u->scroll_limit_y = glGetUniformLocation(gpu->anim_program, "u_scroll_limit_y");
+    u->source_max_y = glGetUniformLocation(gpu->anim_program, "u_source_max_y");
     glUseProgram(gpu->anim_program);
     glUniform1i(u->layer[0], 0);
     glUniform1i(u->layer[1], 1);
     return glGetError() == GL_NO_ERROR ? 0 : -1;
 }
 
-int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEffect *effect,
-                                  const DepthLayer *layers,
-                                  const DepthAnimRect *first, const DepthAnimRect *second,
-                                  int clip_x, int clip_y, int clip_width, int clip_height,
-                                  int bar_top, int bar_bottom, int has_back)
+int depth_gpu_gallery_anim_scroll_region(DepthGpu *gpu, Display *display, const DepthEffect *effect,
+                                         const DepthLayer *layers,
+                                         const DepthAnimRect *first, const DepthAnimRect *second,
+                                         int clip_x, int clip_y, int clip_width, int clip_height,
+                                         int bar_top, int bar_bottom, int has_back,
+                                         float scroll_y, int scroll_limit_y, int source_max_y)
 {
     const int screen_w = display->mode.hdisplay;
     const int screen_h = display->mode.vdisplay;
@@ -1296,6 +1336,9 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
     glUniform1i(gpu->anim_uniforms.inv_view, effect->inv_view);
     glUniform1i(gpu->anim_uniforms.flip_subp, effect->flip_subp);
     glUniform1i(gpu->anim_uniforms.has_back, has_back ? 1 : 0);
+    glUniform1f(gpu->anim_uniforms.scroll_y, scroll_y);
+    glUniform1f(gpu->anim_uniforms.scroll_limit_y, (float)scroll_limit_y);
+    glUniform1f(gpu->anim_uniforms.source_max_y, (float)source_max_y);
     glScissor(clip_x, gpu->cache_height - clip_y - clip_height, clip_width, clip_height);
     draw_vertices();
     glFlush();
@@ -1306,6 +1349,19 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
     mark_slots_dirty(gpu, clip_x, clip_y, clip_width, clip_height);
     advance_cache_revision(gpu);
     return 0;
+}
+
+int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEffect *effect,
+                                  const DepthLayer *layers,
+                                  const DepthAnimRect *first, const DepthAnimRect *second,
+                                  int clip_x, int clip_y, int clip_width, int clip_height,
+                                  int bar_top, int bar_bottom, int has_back)
+{
+    return depth_gpu_gallery_anim_scroll_region(gpu, display, effect, layers,
+                                                first, second,
+                                                clip_x, clip_y, clip_width, clip_height,
+                                                bar_top, bar_bottom, has_back,
+                                                0.0f, 0, 0);
 }
 
 static void clear_cache_band(int cache_height, int x, int y0, int y1, int width,

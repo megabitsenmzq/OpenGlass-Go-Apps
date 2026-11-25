@@ -10,6 +10,7 @@ typedef struct {
     int begin_calls;
     int upload_calls;
     int anim_region_calls;
+    int anim_scroll_region_calls;
     int anim_clear_calls;
     int cached_calls;
     int region_calls;

@@ -644,6 +644,104 @@ static int clamp_font_size(int font_size)
     return font_size;
 }
 
+static int handle_anim_present_common(AppHostSession *session, uint32_t seq,
+                                      const uint8_t *payload, uint32_t length,
+                                      size_t header_size, uint32_t rect_count,
+                                      uint32_t clip_count, int32_t bar_top,
+                                      int32_t bar_bottom, int32_t has_back,
+                                      int32_t present, int32_t commit_cache,
+                                      int32_t clear_cache, float scroll_y,
+                                      int32_t scroll_limit_y, int32_t source_max_y)
+{
+    LkgReplyPayload reply;
+    DepthAnimRect anim_rects[2];
+    const DepthAnimRect *first = NULL;
+    const DepthAnimRect *second = NULL;
+    int screen_w = (int)session->display->mode.hdisplay;
+    int screen_h = (int)session->display->mode.vdisplay;
+    size_t expected;
+    uint32_t i;
+
+    if (rect_count > 2 || clip_count == 0 || clip_count > 2 ||
+        scroll_limit_y < 0 || source_max_y < 0) {
+        reply.status = -1;
+        return send_reply(session->sock_fd, LKG_MSG_REPLY, seq,
+                          &reply, sizeof(reply), NULL, 0);
+    }
+    expected = header_size + (size_t)rect_count * sizeof(LkgAnimRect) +
+               (size_t)clip_count * sizeof(LkgClipRect);
+    if (length < expected || (!clear_cache && !session->frame_initialized) ||
+        !session->depth->stereo ||
+        !depth_gallery_direct_upload(session->display, session->depth)) {
+        reply.status = -1;
+        return send_reply(session->sock_fd, LKG_MSG_REPLY, seq,
+                          &reply, sizeof(reply), NULL, 0);
+    }
+    if (clear_cache) {
+        if (depth_gallery_begin(session->display, session->depth) != 0) {
+            reply.status = -1;
+            return send_reply(session->sock_fd, LKG_MSG_REPLY, seq,
+                              &reply, sizeof(reply), NULL, 0);
+        }
+        session->frame_initialized = 1;
+    }
+    for (i = 0; i < rect_count; ++i) {
+        LkgAnimRect r;
+        memcpy(&r, payload + header_size + (size_t)i * sizeof(r), sizeof(r));
+        anim_rects[i].x0 = r.x0;
+        anim_rects[i].y0 = r.y0;
+        anim_rects[i].x1 = r.x1;
+        anim_rects[i].y1 = r.y1;
+        anim_rects[i].disparity = r.disparity;
+    }
+    if (rect_count > 0)
+        first = &anim_rects[0];
+    if (rect_count > 1)
+        second = &anim_rects[1];
+    reply.status = 0;
+    for (i = 0; i < clip_count; ++i) {
+        LkgClipRect c;
+        int cx0, cy0, cx1, cy1;
+        memcpy(&c, payload + header_size +
+               (size_t)rect_count * sizeof(LkgAnimRect) +
+               (size_t)i * sizeof(c), sizeof(c));
+        cx0 = c.x < 0 ? 0 : c.x;
+        cy0 = c.y < 0 ? 0 : c.y;
+        cx1 = (long long)c.x + c.width > screen_w ? screen_w : (int)((long long)c.x + c.width);
+        cy1 = (long long)c.y + c.height > screen_h ? screen_h : (int)((long long)c.y + c.height);
+        if (cx1 > cx0 && cy1 > cy0) {
+            int rc;
+            if (rect_count == 0 && !has_back && scroll_limit_y == 0) {
+                rc = depth_gallery_anim_clear(session->display, session->depth,
+                                              cx0, cy0, cx1 - cx0, cy1 - cy0,
+                                              bar_top, bar_bottom);
+            } else {
+                rc = depth_gallery_anim_scroll_region(session->display, session->depth,
+                                                      session->app_layers, first, second,
+                                                      cx0, cy0, cx1 - cx0, cy1 - cy0,
+                                                      bar_top, bar_bottom, has_back,
+                                                      scroll_y, scroll_limit_y, source_max_y);
+            }
+            if (rc != 0) {
+                reply.status = -1;
+                break;
+            }
+        }
+    }
+    if (reply.status == 0 && present) {
+        if (depth_gallery_present(session->display, session->depth) != 0) {
+            reply.status = -1;
+        } else {
+            session->last_bar_top = bar_top;
+            session->last_bar_bottom = bar_bottom;
+        }
+    }
+    if (reply.status == 0 && commit_cache)
+        depth_cache_commit(session->depth, &session->cache_state, 1);
+    return send_reply(session->sock_fd, LKG_MSG_REPLY, seq,
+                      &reply, sizeof(reply), NULL, 0);
+}
+
 static int handle_client_message(AppHostSession *session)
 {
     LkgMsgHeader header;
@@ -676,7 +774,8 @@ static int handle_client_message(AppHostSession *session)
                               &reply, sizeof(reply), NULL, 0);
         }
         if (header.type == LKG_MSG_SYNC || header.type == LKG_MSG_PRESENT ||
-            header.type == LKG_MSG_ANIM_PRESENT) {
+            header.type == LKG_MSG_ANIM_PRESENT ||
+            header.type == LKG_MSG_ANIM_SCROLL_PRESENT) {
             LkgReplyPayload reply;
             reply.status = -1;
             return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
@@ -863,8 +962,7 @@ static int handle_client_message(AppHostSession *session)
         ry0 = req.y < 0 ? 0 : req.y;
         rx1 = (long long)req.x + req.width > screen_w ? screen_w : (int)((long long)req.x + req.width);
         ry1 = (long long)req.y + req.height > screen_h ? screen_h : (int)((long long)req.y + req.height);
-        if (session->frame_initialized &&
-            depth_gallery_direct_upload(session->display, session->depth) &&
+        if (depth_gallery_direct_upload(session->display, session->depth) &&
             rx1 > rx0 && ry1 > ry0) {
             int layer;
             for (layer = 0; layer < 2; ++layer)
@@ -879,85 +977,26 @@ static int handle_client_message(AppHostSession *session)
     }
     case LKG_MSG_ANIM_PRESENT: {
         LkgAnimPresentPayload req;
-        LkgReplyPayload reply;
-        DepthAnimRect anim_rects[2];
-        const DepthAnimRect *first = NULL;
-        const DepthAnimRect *second = NULL;
-        int screen_w = (int)session->display->mode.hdisplay;
-        int screen_h = (int)session->display->mode.vdisplay;
-        size_t expected;
-        uint32_t i;
         if (header.length < sizeof(req))
             return -1;
         memcpy(&req, payload, sizeof(req));
-        if (req.rect_count > 2 || req.clip_count == 0 || req.clip_count > 2) {
-            reply.status = -1;
-            return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
-                              &reply, sizeof(reply), NULL, 0);
-        }
-        expected = sizeof(req) + (size_t)req.rect_count * sizeof(LkgAnimRect) +
-                   (size_t)req.clip_count * sizeof(LkgClipRect);
-        if (header.length < expected || !session->frame_initialized ||
-            !session->depth->stereo ||
-            !depth_gallery_direct_upload(session->display, session->depth)) {
-            reply.status = -1;
-            return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
-                              &reply, sizeof(reply), NULL, 0);
-        }
-        for (i = 0; i < req.rect_count; ++i) {
-            LkgAnimRect r;
-            memcpy(&r, payload + sizeof(req) + (size_t)i * sizeof(r), sizeof(r));
-            anim_rects[i].x0 = r.x0;
-            anim_rects[i].y0 = r.y0;
-            anim_rects[i].x1 = r.x1;
-            anim_rects[i].y1 = r.y1;
-            anim_rects[i].disparity = r.disparity;
-        }
-        if (req.rect_count > 0)
-            first = &anim_rects[0];
-        if (req.rect_count > 1)
-            second = &anim_rects[1];
-        reply.status = 0;
-        for (i = 0; i < req.clip_count; ++i) {
-            LkgClipRect c;
-            int cx0, cy0, cx1, cy1;
-            memcpy(&c, payload + sizeof(req) +
-                   (size_t)req.rect_count * sizeof(LkgAnimRect) +
-                   (size_t)i * sizeof(c), sizeof(c));
-            cx0 = c.x < 0 ? 0 : c.x;
-            cy0 = c.y < 0 ? 0 : c.y;
-            cx1 = (long long)c.x + c.width > screen_w ? screen_w : (int)((long long)c.x + c.width);
-            cy1 = (long long)c.y + c.height > screen_h ? screen_h : (int)((long long)c.y + c.height);
-            if (cx1 > cx0 && cy1 > cy0) {
-                int rc;
-                if (req.rect_count == 0 && !req.has_back) {
-                    rc = depth_gallery_anim_clear(session->display, session->depth,
-                                                  cx0, cy0, cx1 - cx0, cy1 - cy0,
-                                                  req.bar_top, req.bar_bottom);
-                } else {
-                    rc = depth_gallery_anim_region(session->display, session->depth,
-                                                   session->app_layers, first, second,
-                                                   cx0, cy0, cx1 - cx0, cy1 - cy0,
-                                                   req.bar_top, req.bar_bottom, req.has_back);
-                }
-                if (rc != 0) {
-                    reply.status = -1;
-                    break;
-                }
-            }
-        }
-        if (reply.status == 0 && req.present) {
-            if (depth_gallery_present(session->display, session->depth) != 0) {
-                reply.status = -1;
-            } else {
-                session->last_bar_top = req.bar_top;
-                session->last_bar_bottom = req.bar_bottom;
-            }
-        }
-        if (reply.status == 0 && req.commit_cache)
-            depth_cache_commit(session->depth, &session->cache_state, 1);
-        return send_reply(session->sock_fd, LKG_MSG_REPLY, header.seq,
-                          &reply, sizeof(reply), NULL, 0);
+        return handle_anim_present_common(session, header.seq, payload, header.length,
+                                          sizeof(req), req.rect_count, req.clip_count,
+                                          req.bar_top, req.bar_bottom, req.has_back,
+                                          req.present, req.commit_cache,
+                                          0, 0.0f, 0, 0);
+    }
+    case LKG_MSG_ANIM_SCROLL_PRESENT: {
+        LkgAnimScrollPresentPayload req;
+        if (header.length < sizeof(req))
+            return -1;
+        memcpy(&req, payload, sizeof(req));
+        return handle_anim_present_common(session, header.seq, payload, header.length,
+                                          sizeof(req), req.rect_count, req.clip_count,
+                                          req.bar_top, req.bar_bottom, req.has_back,
+                                          req.present, req.commit_cache,
+                                          req.clear_cache, req.scroll_y,
+                                          req.scroll_limit_y, req.source_max_y);
     }
     case LKG_MSG_TEXT_INPUT: {
         LkgTextInputPayload req;

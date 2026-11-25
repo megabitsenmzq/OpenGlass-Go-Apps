@@ -24,6 +24,12 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
                                   const DepthAnimRect *first, const DepthAnimRect *second,
                                   int clip_x, int clip_y, int clip_width, int clip_height,
                                   int bar_top, int bar_bottom, int has_back);
+int depth_gpu_gallery_anim_scroll_region(DepthGpu *gpu, Display *display, const DepthEffect *effect,
+                                         const DepthLayer *layers,
+                                         const DepthAnimRect *first, const DepthAnimRect *second,
+                                         int clip_x, int clip_y, int clip_width, int clip_height,
+                                         int bar_top, int bar_bottom, int has_back,
+                                         float scroll_y, int scroll_limit_y, int source_max_y);
 int depth_gpu_gallery_anim_clear(DepthGpu *gpu, Display *display,
                                  int clip_x, int clip_y, int clip_width, int clip_height,
                                  int bar_top, int bar_bottom);

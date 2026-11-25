@@ -156,7 +156,8 @@ typedef enum {
     LKG_MSG_REPLY,
     LKG_MSG_EVENT,
     LKG_MSG_UPLOAD_RECT,
-    LKG_MSG_ANIM_PRESENT
+    LKG_MSG_ANIM_PRESENT,
+    LKG_MSG_ANIM_SCROLL_PRESENT
 } LkgMsgType;
 
 typedef struct {
@@ -269,5 +270,19 @@ typedef struct {
     int32_t present;
     int32_t commit_cache;
 } LkgAnimPresentPayload;
+
+typedef struct {
+    uint32_t rect_count;
+    uint32_t clip_count;
+    int32_t bar_top;
+    int32_t bar_bottom;
+    int32_t has_back;
+    int32_t present;
+    int32_t commit_cache;
+    int32_t clear_cache;
+    float scroll_y;
+    int32_t scroll_limit_y;
+    int32_t source_max_y;
+} LkgAnimScrollPresentPayload;
 
 #endif

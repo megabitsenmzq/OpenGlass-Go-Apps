@@ -112,6 +112,22 @@ int depth_gallery_anim_region(Display *display, const DepthEffect *effect,
     return depth_fake.fail_update ? -1 : 0;
 }
 
+int depth_gallery_anim_scroll_region(Display *display, const DepthEffect *effect,
+                                     const DepthLayer *layers,
+                                     const DepthAnimRect *first, const DepthAnimRect *second,
+                                     int clip_x, int clip_y, int clip_width, int clip_height,
+                                     int bar_top, int bar_bottom, int has_back,
+                                     float scroll_y, int scroll_limit_y, int source_max_y)
+{
+    (void)scroll_y;
+    (void)scroll_limit_y;
+    (void)source_max_y;
+    ++depth_fake.anim_scroll_region_calls;
+    return depth_gallery_anim_region(display, effect, layers, first, second,
+                                     clip_x, clip_y, clip_width, clip_height,
+                                     bar_top, bar_bottom, has_back);
+}
+
 int depth_gallery_anim_clear(Display *display, const DepthEffect *effect,
                              int clip_x, int clip_y, int clip_width, int clip_height,
                              int bar_top, int bar_bottom)

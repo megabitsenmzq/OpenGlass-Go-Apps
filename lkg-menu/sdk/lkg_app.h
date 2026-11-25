@@ -73,5 +73,10 @@ int lkg_app_present_anim(LkgApp *app, const LkgAnimRect *rects, size_t rect_coun
                          const LkgClipRect *clips, size_t clip_count,
                          int bar_top, int bar_bottom, int has_back,
                          int present, int commit_cache);
+int lkg_app_present_anim_scroll(LkgApp *app, const LkgAnimRect *rects, size_t rect_count,
+                                const LkgClipRect *clips, size_t clip_count,
+                                int bar_top, int bar_bottom, int has_back,
+                                float scroll_y, int scroll_limit_y, int source_max_y,
+                                int clear_cache, int present, int commit_cache);
 
 #endif
