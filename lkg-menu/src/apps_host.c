@@ -929,10 +929,18 @@ static int handle_client_message(AppHostSession *session)
             cx1 = (long long)c.x + c.width > screen_w ? screen_w : (int)((long long)c.x + c.width);
             cy1 = (long long)c.y + c.height > screen_h ? screen_h : (int)((long long)c.y + c.height);
             if (cx1 > cx0 && cy1 > cy0) {
-                if (depth_gallery_anim_region(session->display, session->depth,
-                                              session->app_layers, first, second,
-                                              cx0, cy0, cx1 - cx0, cy1 - cy0,
-                                              req.bar_top, req.bar_bottom) != 0) {
+                int rc;
+                if (req.rect_count == 0 && !req.has_back) {
+                    rc = depth_gallery_anim_clear(session->display, session->depth,
+                                                  cx0, cy0, cx1 - cx0, cy1 - cy0,
+                                                  req.bar_top, req.bar_bottom);
+                } else {
+                    rc = depth_gallery_anim_region(session->display, session->depth,
+                                                   session->app_layers, first, second,
+                                                   cx0, cy0, cx1 - cx0, cy1 - cy0,
+                                                   req.bar_top, req.bar_bottom, req.has_back);
+                }
+                if (rc != 0) {
                     reply.status = -1;
                     break;
                 }
@@ -1436,7 +1444,7 @@ static void apps_anim_cancel(Display *display, Font *font, const DepthEffect *de
                                               &anim->new_rect, NULL,
                                               anim->clip_x[i], anim->clip_y[i],
                                               anim->clip_w[i], anim->clip_h[i],
-                                              anim->bar_top, anim->bar_bottom) != 0) {
+                                              anim->bar_top, anim->bar_bottom, 1) != 0) {
                     anim->active = 0;
                     return;
                 }
@@ -1475,6 +1483,8 @@ static int apps_anim_begin(Display *display, Font *font, const DepthEffect *dept
     int visible_rows;
     int old_y;
     int new_y;
+    int bar_top;
+    int bar_bottom;
     float old_start = depth->front_disparity;
     float new_start = depth->back_disparity;
     DepthAnimRect old_rect;
@@ -1503,33 +1513,45 @@ static int apps_anim_begin(Display *display, Font *font, const DepthEffect *dept
                                  &cx, &cy, &cw, &ch);
             if (cw > 0 && ch > 0 &&
                 depth_gallery_anim_region(display, depth, layers, NULL, NULL,
-                                          cx, cy, cw, ch, 0, 0) != 0)
+                                          cx, cy, cw, ch, 0, 0, 1) != 0)
                 return -1;
         }
         anim->active = 0;
     }
     old_y = apps_view_row_y(display, visible_rows, old_row, scroll);
     new_y = apps_view_row_y(display, visible_rows, new_row, scroll);
-    old_rect.x0 = 0;
+    bar_top = new_y;
+    bar_bottom = new_y + APPS_ROW_HEIGHT - 8;
     old_rect.y0 = old_y;
-    old_rect.x1 = width;
     old_rect.y1 = old_y + APPS_ROW_HEIGHT;
     old_rect.disparity = 0.0f;
-    new_rect.x0 = 0;
     new_rect.y0 = new_y;
-    new_rect.x1 = width;
     new_rect.y1 = new_y + APPS_ROW_HEIGHT;
     new_rect.disparity = 0.0f;
     apps_view_draw_row_anim(display, font, depth, layers, old_row, old_y, 0,
                             old_row >= 1 ? &list->items[old_row - 1] : NULL);
     apps_view_draw_row_anim(display, font, depth, layers, new_row, new_y, 1,
                             new_row >= 1 ? &list->items[new_row - 1] : NULL);
-    if (depth_anim_upload_rect(display, depth, layers, 0, old_y, width, APPS_ROW_HEIGHT) != 0 ||
-        depth_anim_upload_rect(display, depth, layers, 0, new_y, width, APPS_ROW_HEIGHT) != 0)
+    depth_anim_tight_x(display, &layers[0].buffer, old_y, APPS_ROW_HEIGHT,
+                       0, width, &old_rect.x0, &old_rect.x1);
+    depth_anim_tight_x(display, &layers[0].buffer, new_y, APPS_ROW_HEIGHT,
+                       0, width, &new_rect.x0, &new_rect.x1);
+    if (depth_anim_upload_rect(display, depth, layers,
+                               old_rect.x0, old_rect.y0,
+                               old_rect.x1 - old_rect.x0,
+                               old_rect.y1 - old_rect.y0) != 0 ||
+        depth_anim_upload_rect(display, depth, layers,
+                               new_rect.x0, new_rect.y0,
+                               new_rect.x1 - new_rect.x0,
+                               new_rect.y1 - new_rect.y0) != 0 ||
+        depth_gallery_anim_clear(display, depth, 0, old_y, width, APPS_ROW_HEIGHT,
+                                 bar_top, bar_bottom) != 0 ||
+        depth_gallery_anim_clear(display, depth, 0, new_y, width, APPS_ROW_HEIGHT,
+                                 bar_top, bar_bottom) != 0)
         return -1;
     depth_anim_start(anim, display, depth, old_row, new_row,
                      &old_rect, &new_rect,
-                     new_y, new_y + APPS_ROW_HEIGHT - 8,
+                     bar_top, bar_bottom, 0,
                      1, old_start, new_start);
     if (apps_anim_step(display, font, depth, layers, cache_state,
                        anim, list, scroll, new_row) != 0)

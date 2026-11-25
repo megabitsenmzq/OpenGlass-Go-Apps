@@ -71,6 +71,7 @@ int lkg_app_present_rects(LkgApp *app, const LkgRectUpdate *rects, size_t count)
 int lkg_app_upload_rect(LkgApp *app, int x, int y, int width, int height);
 int lkg_app_present_anim(LkgApp *app, const LkgAnimRect *rects, size_t rect_count,
                          const LkgClipRect *clips, size_t clip_count,
-                         int bar_top, int bar_bottom, int present, int commit_cache);
+                         int bar_top, int bar_bottom, int has_back,
+                         int present, int commit_cache);
 
 #endif

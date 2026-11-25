@@ -35,6 +35,7 @@ typedef struct {
     int saw_anim_present;
     int32_t last_anim_bar_top;
     int32_t last_anim_bar_bottom;
+    int32_t last_anim_has_back;
     uint32_t last_rect_color;
     float last_front_depth;
     float last_back_depth;
@@ -258,6 +259,7 @@ static void *mock_host_thread(void *arg)
             memcpy(&p, buf, sizeof(p));
             host->last_anim_bar_top = p.bar_top;
             host->last_anim_bar_bottom = p.bar_bottom;
+            host->last_anim_has_back = p.has_back;
             ++host->saw_anim_present;
             reply.status = 0;
             if (mock_send_frame(host->host_fd, LKG_MSG_REPLY, hdr.seq,
@@ -434,8 +436,10 @@ int test_app_protocol(void)
         LkgAnimRect anim_rect = { 0, 0, 16, 16, 12.5f };
         LkgClipRect clip_rect = { 0, 0, 16, 16 };
         TEST_ASSERT(lkg_app_upload_rect(app, 0, 0, 16, 16) == 0);
+        TEST_ASSERT(lkg_app_present_anim(app, NULL, 0, &clip_rect, 1,
+                                         100, 242, 0, 0, 0) == 0);
         TEST_ASSERT(lkg_app_present_anim(app, &anim_rect, 1, &clip_rect, 1,
-                                         100, 242, 1, 1) == 0);
+                                         100, 242, 1, 1, 1) == 0);
     }
 
     TEST_ASSERT(lkg_app_text_input(app, "Edit Greeting", "Init", input_buf, sizeof(input_buf)) == 1);
@@ -460,8 +464,9 @@ int test_app_protocol(void)
     TEST_ASSERT(host.saw_present == 1);
     TEST_ASSERT(host.saw_present_rects == 1);
     TEST_ASSERT(host.saw_upload_rect == 1);
-    TEST_ASSERT(host.saw_anim_present == 1);
-    TEST_ASSERT(host.last_anim_bar_top == 100 && host.last_anim_bar_bottom == 242);
+    TEST_ASSERT(host.saw_anim_present == 2);
+    TEST_ASSERT(host.last_anim_bar_top == 100 && host.last_anim_bar_bottom == 242 &&
+                host.last_anim_has_back == 1);
     TEST_ASSERT(host.text_input_calls == 2);
 
     for (i = 0; i < 2; ++i) {

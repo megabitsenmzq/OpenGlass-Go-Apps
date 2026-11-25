@@ -6,20 +6,36 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#include <drm_fourcc.h>
 #include <gbm.h>
 #include <xf86drmMode.h>
 
 #include <errno.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef struct {
     int fd;
     uint32_t id;
 } DepthFramebuffer;
+
+typedef struct {
+    struct gbm_bo *bo;
+    EGLImageKHR image;
+    GLuint texture;
+    GLuint fbo;
+    DepthFramebuffer *fb;
+    int dirty_x0;
+    int dirty_y0;
+    int dirty_x1;
+    int dirty_y1;
+    int dirty_full;
+} ScanoutSlot;
 
 typedef struct {
     GLuint texture;
@@ -63,6 +79,7 @@ typedef struct {
     GLint fringe;
     GLint inv_view;
     GLint flip_subp;
+    GLint has_back;
 } DepthAnimUniforms;
 
 struct DepthGpu {
@@ -79,8 +96,14 @@ struct DepthGpu {
     GLuint anim_program;
     DepthAnimUniforms anim_uniforms;
     GLint blit_cache_uniform;
+    GLuint blit_flip_program;
+    GLint blit_flip_cache_uniform;
     int unpack_subimage;
     GLuint textures[2];
+    GLenum layer_filter;
+    int textures_initialized;
+    uint32_t *upload_scratch;
+    size_t upload_scratch_bytes;
     GLuint blit_program;
     GLuint cache_texture;
     GLuint cache_framebuffer;
@@ -92,6 +115,11 @@ struct DepthGpu {
     int gallery_base_width;
     int gallery_base_height;
     GalleryPatch gallery_patches[9][2];
+    PFNEGLDESTROYIMAGEKHRPROC destroy_image;
+    int partial_scanout;
+    int front_slot;
+    int pending_slot;
+    ScanoutSlot slots[2];
     uint32_t current_framebuffer;
     uint64_t cache_revision;
     int failed;
@@ -141,8 +169,7 @@ static const char *fragment_source =
     "vec4 sample_texel_premul(sampler2D image, float x, float y) {\n"
     "  if (x < 0.0 || x >= u_layer_size.x || y < 0.0 || y >= u_layer_size.y)\n"
     "    return vec4(0.0);\n"
-    "  vec4 texel = texture2D(image, (vec2(x, y) + 0.5) / u_layer_size);\n"
-    "  return vec4(texel.rgb * texel.a, texel.a);\n"
+    "  return texture2D(image, (vec2(x, y) + 0.5) / u_layer_size);\n"
     "}\n"
     "vec4 layer_pixel(sampler2D image, float disparity, float angle, vec2 source) {\n"
     "  float local_y = source.y - u_layer_origin.y;\n"
@@ -200,6 +227,14 @@ static const char *blit_vertex_source =
     "varying vec2 v_uv;\n"
     "void main() { v_uv = a_position * 0.5 + 0.5; gl_Position = vec4(a_position, 0.0, 1.0); }\n";
 
+static const char *blit_flip_vertex_source =
+    "attribute vec2 a_position;\n"
+    "varying vec2 v_uv;\n"
+    "void main() {\n"
+    "  v_uv = vec2(a_position.x * 0.5 + 0.5, 0.5 - a_position.y * 0.5);\n"
+    "  gl_Position = vec4(a_position, 0.0, 1.0);\n"
+    "}\n";
+
 static const char *blit_fragment_source =
     "precision mediump float;\n"
     "varying vec2 v_uv;\n"
@@ -224,14 +259,11 @@ static const char *anim_fragment_source =
     "uniform float u_fringe;\n"
     "uniform int u_inv_view;\n"
     "uniform int u_flip_subp;\n"
+    "uniform int u_has_back;\n"
     "vec3 base_color(vec2 source) {\n"
     "  if (source.y >= u_bar_range.x && source.y < u_bar_range.y)\n"
     "    return vec3(232.0 / 255.0);\n"
     "  return vec3(16.0 / 255.0, 16.0 / 255.0, 20.0 / 255.0);\n"
-    "}\n"
-    "vec4 sample_premul(sampler2D image, float x, float y) {\n"
-    "  vec4 c = texture2D(image, vec2(x + 0.5, y + 0.5) * u_inv_resolution);\n"
-    "  return vec4(c.rgb * c.a, c.a);\n"
     "}\n"
     "vec4 sample_bounded(sampler2D image, float disp, vec4 bounds, float angle, vec2 source) {\n"
     "  if (bounds.z <= bounds.x || source.y < bounds.y || source.y >= bounds.w)\n"
@@ -239,25 +271,17 @@ static const char *anim_fragment_source =
     "  float lx = source.x + disp * angle;\n"
     "  if (lx <= bounds.x - 1.0 || lx >= bounds.z)\n"
     "    return vec4(0.0);\n"
-    "  float x0 = floor(lx);\n"
-    "  float frac = lx - x0;\n"
-    "  vec4 left = (x0 >= bounds.x && x0 < bounds.z)\n"
-    "      ? sample_premul(image, x0, source.y) : vec4(0.0);\n"
-    "  vec4 right = (x0 + 1.0 >= bounds.x && x0 + 1.0 < bounds.z)\n"
-    "      ? sample_premul(image, x0 + 1.0, source.y) : vec4(0.0);\n"
-    "  return mix(left, right, frac);\n"
+    "  float sx = clamp(lx, bounds.x, bounds.z - 1.0);\n"
+    "  float w = min(1.0, min(lx - bounds.x + 1.0, bounds.z - lx));\n"
+    "  return texture2D(image, vec2(sx + 0.5, source.y + 0.5) * u_inv_resolution) * w;\n"
     "}\n"
     "vec4 sample_back(float angle, vec2 source) {\n"
     "  float lx = source.x + u_back_disparity * angle;\n"
     "  if (lx <= -1.0 || lx >= u_resolution.x)\n"
     "    return vec4(0.0);\n"
-    "  float x0 = floor(lx);\n"
-    "  float frac = lx - x0;\n"
-    "  vec4 left = (x0 >= 0.0 && x0 < u_resolution.x)\n"
-    "      ? sample_premul(u_layer1, x0, source.y) : vec4(0.0);\n"
-    "  vec4 right = (x0 + 1.0 >= 0.0 && x0 + 1.0 < u_resolution.x)\n"
-    "      ? sample_premul(u_layer1, x0 + 1.0, source.y) : vec4(0.0);\n"
-    "  return mix(left, right, frac);\n"
+    "  float sx = clamp(lx, 0.0, u_resolution.x - 1.0);\n"
+    "  float w = min(1.0, min(lx + 1.0, u_resolution.x - lx));\n"
+    "  return texture2D(u_layer1, vec2(sx + 0.5, source.y + 0.5) * u_inv_resolution) * w;\n"
     "}\n"
     "vec3 composite_anim(float angle, vec2 source, vec3 base) {\n"
     "  vec4 top = sample_bounded(u_layer0, u_first_disparity, u_first_bounds, angle, source);\n"
@@ -272,6 +296,8 @@ static const char *anim_fragment_source =
     "    if (rem <= 0.001)\n"
     "      return color;\n"
     "  }\n"
+    "  if (u_has_back == 0)\n"
+    "    return color + base * rem;\n"
     "  vec4 bg = sample_back(angle, source);\n"
     "  vec3 under = bg.rgb + base * (1.0 - bg.a);\n"
     "  return color + under * rem;\n"
@@ -369,14 +395,24 @@ static void framebuffer_destroy(struct gbm_bo *bo, void *data)
     }
 }
 
+static void destroy_image_khr(EGLDisplay egl_display, PFNEGLDESTROYIMAGEKHRPROC destroy_fn,
+                              EGLImageKHR image)
+{
+    if (image != EGL_NO_IMAGE_KHR && destroy_fn)
+        destroy_fn(egl_display, image);
+}
+
 static DepthFramebuffer *framebuffer_for_bo(DepthGpu *gpu, Display *display,
                                              struct gbm_bo *bo)
 {
     DepthFramebuffer *framebuffer = gbm_bo_get_user_data(bo);
     uint32_t handles[4] = {0};
-    (void)gpu;
     uint32_t strides[4] = {0};
     uint32_t offsets[4] = {0};
+    uint64_t modifiers[4] = {0};
+    uint64_t modifier;
+    int added = -1;
+    (void)gpu;
     if (framebuffer)
         return framebuffer;
     framebuffer = calloc(1, sizeof(*framebuffer));
@@ -385,9 +421,23 @@ static DepthFramebuffer *framebuffer_for_bo(DepthGpu *gpu, Display *display,
     framebuffer->fd = display->fd;
     handles[0] = gbm_bo_get_handle(bo).u32;
     strides[0] = gbm_bo_get_stride(bo);
-    if (drmModeAddFB2(display->fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo),
-                      gbm_bo_get_format(bo), handles, strides, offsets,
-                      &framebuffer->id, 0) != 0) {
+    offsets[0] = gbm_bo_get_offset(bo, 0);
+    modifier = gbm_bo_get_modifier(bo);
+    if (modifier != DRM_FORMAT_MOD_INVALID && modifier != DRM_FORMAT_MOD_LINEAR) {
+        modifiers[0] = modifier;
+        added = drmModeAddFB2WithModifiers(display->fd, gbm_bo_get_width(bo),
+                                           gbm_bo_get_height(bo), gbm_bo_get_format(bo),
+                                           handles, strides, offsets, modifiers,
+                                           &framebuffer->id, DRM_MODE_FB_MODIFIERS);
+    }
+    if (added != 0 &&
+        (modifier == DRM_FORMAT_MOD_INVALID || modifier == DRM_FORMAT_MOD_LINEAR ||
+         errno == ENOTSUP)) {
+        added = drmModeAddFB2(display->fd, gbm_bo_get_width(bo),
+                              gbm_bo_get_height(bo), gbm_bo_get_format(bo),
+                              handles, strides, offsets, &framebuffer->id, 0);
+    }
+    if (added != 0) {
         free(framebuffer);
         return NULL;
     }
@@ -398,12 +448,211 @@ static DepthFramebuffer *framebuffer_for_bo(DepthGpu *gpu, Display *display,
 static void page_flip_complete(void *data)
 {
     DepthGpu *gpu = data;
+    if (gpu->partial_scanout) {
+        if (gpu->pending_slot >= 0) {
+            gpu->front_slot = gpu->pending_slot;
+            gpu->pending_slot = -1;
+        }
+        return;
+    }
     if (!gpu->pending_bo)
         return;
     if (gpu->scanout_bo)
         gbm_surface_release_buffer(gpu->gbm_surface, gpu->scanout_bo);
     gpu->scanout_bo = gpu->pending_bo;
     gpu->pending_bo = NULL;
+}
+
+static void mark_slots_dirty(DepthGpu *gpu, int x, int y, int width, int height)
+{
+    int idx;
+    int x1 = x + width;
+    int y1 = y + height;
+    if (!gpu->partial_scanout || width <= 0 || height <= 0)
+        return;
+    for (idx = 0; idx < 2; ++idx) {
+        ScanoutSlot *entry = &gpu->slots[idx];
+        if (entry->dirty_full)
+            continue;
+        if (entry->dirty_x1 <= entry->dirty_x0 || entry->dirty_y1 <= entry->dirty_y0) {
+            entry->dirty_x0 = x;
+            entry->dirty_y0 = y;
+            entry->dirty_x1 = x1;
+            entry->dirty_y1 = y1;
+        } else {
+            if (x < entry->dirty_x0)
+                entry->dirty_x0 = x;
+            if (y < entry->dirty_y0)
+                entry->dirty_y0 = y;
+            if (x1 > entry->dirty_x1)
+                entry->dirty_x1 = x1;
+            if (y1 > entry->dirty_y1)
+                entry->dirty_y1 = y1;
+        }
+    }
+}
+
+static void mark_slots_dirty_full(DepthGpu *gpu)
+{
+    int idx;
+    if (!gpu->partial_scanout)
+        return;
+    for (idx = 0; idx < 2; ++idx)
+        gpu->slots[idx].dirty_full = 1;
+}
+
+static void scanout_slots_destroy_gl(DepthGpu *gpu)
+{
+    int idx;
+    for (idx = 0; idx < 2; ++idx) {
+        ScanoutSlot *entry = &gpu->slots[idx];
+        if (entry->fbo)
+            glDeleteFramebuffers(1, &entry->fbo);
+        if (entry->texture)
+            glDeleteTextures(1, &entry->texture);
+        entry->fbo = 0;
+        entry->texture = 0;
+    }
+}
+
+static void scanout_slots_destroy_buffers(DepthGpu *gpu)
+{
+    int idx;
+    for (idx = 0; idx < 2; ++idx) {
+        ScanoutSlot *entry = &gpu->slots[idx];
+        if (entry->image != EGL_NO_IMAGE_KHR && gpu->display != EGL_NO_DISPLAY)
+            destroy_image_khr(gpu->display, gpu->destroy_image, entry->image);
+        if (entry->bo)
+            gbm_bo_destroy(entry->bo);
+        memset(entry, 0, sizeof(*entry));
+        entry->image = EGL_NO_IMAGE_KHR;
+    }
+    gpu->partial_scanout = 0;
+    gpu->front_slot = -1;
+    gpu->pending_slot = -1;
+}
+
+static int scanout_slots_init_with_flags(DepthGpu *gpu, Display *display,
+                                         uint32_t bo_flags, int has_mods,
+                                         PFNEGLCREATEIMAGEKHRPROC create_image,
+                                         PFNGLEGLIMAGETARGETTEXTURE2DOESPROC target_tex)
+{
+    const int width = display->mode.hdisplay;
+    const int height = display->mode.vdisplay;
+    int idx;
+    for (idx = 0; idx < 2; ++idx) {
+        ScanoutSlot *entry = &gpu->slots[idx];
+        EGLint attrs[20];
+        int attr_count = 0;
+        int dmabuf_fd;
+        uint32_t stride;
+        uint32_t offset;
+        uint64_t modifier;
+        entry->image = EGL_NO_IMAGE_KHR;
+        entry->bo = gbm_bo_create(gpu->gbm, (uint32_t)width, (uint32_t)height,
+                                  GBM_FORMAT_ARGB8888, bo_flags);
+        if (!entry->bo)
+            goto fail;
+        entry->fb = framebuffer_for_bo(gpu, display, entry->bo);
+        if (!entry->fb)
+            goto fail;
+        dmabuf_fd = gbm_bo_get_fd(entry->bo);
+        if (dmabuf_fd < 0)
+            goto fail;
+        stride = gbm_bo_get_stride(entry->bo);
+        offset = gbm_bo_get_offset(entry->bo, 0);
+        modifier = gbm_bo_get_modifier(entry->bo);
+        attrs[attr_count++] = EGL_WIDTH;
+        attrs[attr_count++] = width;
+        attrs[attr_count++] = EGL_HEIGHT;
+        attrs[attr_count++] = height;
+        attrs[attr_count++] = EGL_LINUX_DRM_FOURCC_EXT;
+        attrs[attr_count++] = DRM_FORMAT_ARGB8888;
+        attrs[attr_count++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+        attrs[attr_count++] = dmabuf_fd;
+        attrs[attr_count++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+        attrs[attr_count++] = (EGLint)offset;
+        attrs[attr_count++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+        attrs[attr_count++] = (EGLint)stride;
+        if (has_mods && modifier != DRM_FORMAT_MOD_INVALID) {
+            attrs[attr_count++] = EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT;
+            attrs[attr_count++] = (EGLint)(modifier & 0xffffffffu);
+            attrs[attr_count++] = EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT;
+            attrs[attr_count++] = (EGLint)(modifier >> 32);
+        }
+        attrs[attr_count++] = EGL_NONE;
+        entry->image = create_image(gpu->display, EGL_NO_CONTEXT,
+                                    EGL_LINUX_DMA_BUF_EXT, NULL, attrs);
+        close(dmabuf_fd);
+        if (entry->image == EGL_NO_IMAGE_KHR)
+            goto fail;
+        glGenTextures(1, &entry->texture);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, entry->texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        target_tex(GL_TEXTURE_2D, entry->image);
+        glGenFramebuffers(1, &entry->fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, entry->fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               entry->texture, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+            glGetError() != GL_NO_ERROR)
+            goto fail;
+        entry->dirty_full = 1;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return 0;
+fail:
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    while (glGetError() != GL_NO_ERROR) {}
+    scanout_slots_destroy_gl(gpu);
+    scanout_slots_destroy_buffers(gpu);
+    return -1;
+}
+
+static void scanout_slots_init(DepthGpu *gpu, Display *display)
+{
+    const char *egl_extensions = eglQueryString(gpu->display, EGL_EXTENSIONS);
+    const char *gl_extensions = (const char *)glGetString(GL_EXTENSIONS);
+    int has_mods = has_extension(egl_extensions, "EGL_EXT_image_dma_buf_import_modifiers");
+    PFNEGLCREATEIMAGEKHRPROC create_image;
+    PFNGLEGLIMAGETARGETTEXTURE2DOESPROC target_tex;
+    gpu->front_slot = -1;
+    gpu->pending_slot = -1;
+    gpu->slots[0].image = EGL_NO_IMAGE_KHR;
+    gpu->slots[1].image = EGL_NO_IMAGE_KHR;
+    if (!has_extension(egl_extensions, "EGL_KHR_image_base") ||
+        !has_extension(egl_extensions, "EGL_EXT_image_dma_buf_import") ||
+        !has_extension(gl_extensions, "GL_OES_EGL_image"))
+        return;
+    create_image = (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    gpu->destroy_image = (PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR");
+    target_tex = (PFNGLEGLIMAGETARGETTEXTURE2DOESPROC)eglGetProcAddress("glEGLImageTargetTexture2DOES");
+    if (!create_image || !gpu->destroy_image || !target_tex)
+        return;
+    gpu->blit_flip_program = create_program(blit_flip_vertex_source, blit_fragment_source);
+    if (!gpu->blit_flip_program)
+        return;
+    gpu->blit_flip_cache_uniform = glGetUniformLocation(gpu->blit_flip_program, "u_cache");
+    glUseProgram(gpu->blit_flip_program);
+    glUniform1i(gpu->blit_flip_cache_uniform, 0);
+    if (scanout_slots_init_with_flags(gpu, display,
+                                      GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING,
+                                      has_mods, create_image, target_tex) == 0 ||
+        scanout_slots_init_with_flags(gpu, display,
+                                      GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING |
+                                      GBM_BO_USE_LINEAR,
+                                      has_mods, create_image, target_tex) == 0) {
+        gpu->partial_scanout = 1;
+        return;
+    }
+    if (gpu->blit_flip_program) {
+        glDeleteProgram(gpu->blit_flip_program);
+        gpu->blit_flip_program = 0;
+    }
 }
 
 static void release_bake_textures(DepthGpu *gpu)
@@ -450,18 +699,24 @@ static void destroy_gl(DepthGpu *gpu)
                 glDeleteProgram(gpu->anim_program);
             if (gpu->blit_program)
                 glDeleteProgram(gpu->blit_program);
+            if (gpu->blit_flip_program)
+                glDeleteProgram(gpu->blit_flip_program);
             if (gpu->cache_texture)
                 glDeleteTextures(1, &gpu->cache_texture);
             if (gpu->cache_framebuffer)
                 glDeleteFramebuffers(1, &gpu->cache_framebuffer);
+            scanout_slots_destroy_gl(gpu);
             release_bake_textures(gpu);
         }
         eglMakeCurrent(gpu->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        scanout_slots_destroy_buffers(gpu);
         if (gpu->surface != EGL_NO_SURFACE)
             eglDestroySurface(gpu->display, gpu->surface);
         if (gpu->context != EGL_NO_CONTEXT)
             eglDestroyContext(gpu->display, gpu->context);
         eglTerminate(gpu->display);
+    } else {
+        scanout_slots_destroy_buffers(gpu);
     }
     if (gpu->scanout_bo)
         gbm_surface_release_buffer(gpu->gbm_surface, gpu->scanout_bo);
@@ -475,6 +730,7 @@ static void destroy_gl(DepthGpu *gpu)
         gbm_surface_destroy(gpu->gbm_surface);
     if (gpu->gbm)
         gbm_device_destroy(gpu->gbm);
+    free(gpu->upload_scratch);
     free(gpu);
 }
 
@@ -499,6 +755,10 @@ DepthGpu *depth_gpu_create(Display *display)
     gpu->display = EGL_NO_DISPLAY;
     gpu->context = EGL_NO_CONTEXT;
     gpu->surface = EGL_NO_SURFACE;
+    gpu->slots[0].image = EGL_NO_IMAGE_KHR;
+    gpu->slots[1].image = EGL_NO_IMAGE_KHR;
+    gpu->front_slot = -1;
+    gpu->pending_slot = -1;
     gpu->gbm = gbm_create_device(display->fd);
     if (!gpu->gbm)
         goto fail;
@@ -540,6 +800,9 @@ DepthGpu *depth_gpu_create(Display *display)
             depth_gpu_direct_upload(gpu) ? "enabled" : "unavailable");
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
+    scanout_slots_init(gpu, display);
+    fprintf(stderr, "Depth partial scanout: %s\n",
+            gpu->partial_scanout ? "enabled" : "unavailable");
     return gpu;
 fail:
     fprintf(stderr, "Depth GPU initialization failed (EGL error 0x%x)\n", eglGetError());
@@ -708,6 +971,7 @@ int depth_gpu_gallery_begin(DepthGpu *gpu, Display *display)
     glClearColor(16.0f / 255.0f, 16.0f / 255.0f, 20.0f / 255.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    mark_slots_dirty_full(gpu);
     advance_cache_revision(gpu);
     return 0;
 }
@@ -717,6 +981,83 @@ int depth_gpu_direct_upload(DepthGpu *gpu)
     return gpu && gpu->unpack_subimage;
 }
 
+static uint32_t premultiply_partial(uint32_t pixel, uint32_t alpha)
+{
+    uint32_t t = (pixel & 0xffu) * alpha + 128u;
+    uint32_t b = (t + (t >> 8)) >> 8;
+    uint32_t g;
+    uint32_t r;
+    t = ((pixel >> 8) & 0xffu) * alpha + 128u;
+    g = (t + (t >> 8)) >> 8;
+    t = ((pixel >> 16) & 0xffu) * alpha + 128u;
+    r = (t + (t >> 8)) >> 8;
+    return (alpha << 24) | (r << 16) | (g << 8) | b;
+}
+
+static uint32_t *ensure_upload_scratch(DepthGpu *gpu, size_t pixel_count)
+{
+    size_t bytes;
+    if (pixel_count > SIZE_MAX / sizeof(uint32_t))
+        return NULL;
+    bytes = pixel_count * sizeof(uint32_t);
+    if (gpu->upload_scratch_bytes < bytes) {
+        uint32_t *buf = realloc(gpu->upload_scratch, bytes);
+        if (!buf)
+            return NULL;
+        gpu->upload_scratch = buf;
+        gpu->upload_scratch_bytes = bytes;
+    }
+    return gpu->upload_scratch;
+}
+
+static void premultiply_rect(const uint32_t *src, uint32_t src_stride_pixels,
+                             int width, int height, uint32_t *dst)
+{
+    int row;
+    for (row = 0; row < height; ++row) {
+        const uint32_t *src_row = src + (size_t)row * (size_t)src_stride_pixels;
+        uint32_t *dst_row = dst + (size_t)row * (size_t)width;
+        int col;
+        for (col = 0; col < width; ++col) {
+            uint32_t p = src_row[col];
+            uint32_t a = p >> 24;
+            if (a == 0u)
+                dst_row[col] = 0u;
+            else if (a == 255u)
+                dst_row[col] = p;
+            else
+                dst_row[col] = premultiply_partial(p, a);
+        }
+    }
+}
+
+static void set_layer_filter(DepthGpu *gpu, GLenum filter)
+{
+    int idx;
+    if (!gpu->textures_initialized) {
+        for (idx = 0; idx < 2; ++idx) {
+            glActiveTexture(GL_TEXTURE0 + idx);
+            glBindTexture(GL_TEXTURE_2D, gpu->textures[idx]);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)filter);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)filter);
+        }
+        gpu->layer_filter = filter;
+        gpu->textures_initialized = 1;
+        return;
+    }
+    if (gpu->layer_filter == filter)
+        return;
+    for (idx = 0; idx < 2; ++idx) {
+        glActiveTexture(GL_TEXTURE0 + idx);
+        glBindTexture(GL_TEXTURE_2D, gpu->textures[idx]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)filter);
+    }
+    gpu->layer_filter = filter;
+}
+
 static int gallery_upload(DepthGpu *gpu, Display *display, const DepthLayer *layers,
                           const uint8_t *const pixels[2],
                           int x, int y, int width, int height)
@@ -724,13 +1065,20 @@ static int gallery_upload(DepthGpu *gpu, Display *display, const DepthLayer *lay
     const int screen_w = display->mode.hdisplay;
     const int screen_h = display->mode.vdisplay;
     int direct_upload = depth_gpu_direct_upload(gpu);
+    uint32_t *scratch;
     int i;
     if (x < 0 || y < 0 || width <= 0 || height <= 0 ||
         x + width > screen_w || y + height > screen_h)
         return -1;
     if (direct_upload &&
-        (layers[0].buffer.stride != (uint32_t)screen_w * 4 ||
+        (!layers[0].buffer.pixels || !layers[1].buffer.pixels ||
+         layers[0].buffer.stride != (uint32_t)screen_w * 4 ||
          layers[1].buffer.stride != (uint32_t)screen_w * 4))
+        return -1;
+    if (!direct_upload && (!pixels || !pixels[0] || !pixels[1]))
+        return -1;
+    scratch = ensure_upload_scratch(gpu, (size_t)width * (size_t)height);
+    if (!scratch)
         return -1;
     if (direct_upload && (gpu->layer_width != screen_w || gpu->layer_height != screen_h)) {
         for (i = 0; i < 2; ++i) {
@@ -742,25 +1090,27 @@ static int gallery_upload(DepthGpu *gpu, Display *display, const DepthLayer *lay
         gpu->layer_width = screen_w;
         gpu->layer_height = screen_h;
     }
+    if (!gpu->textures_initialized)
+        set_layer_filter(gpu, GL_NEAREST);
     for (i = 0; i < 2; ++i) {
         glActiveTexture(GL_TEXTURE0 + i);
         glBindTexture(GL_TEXTURE_2D, gpu->textures[i]);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         if (direct_upload) {
-            glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, layers[i].buffer.stride / 4);
-            glPixelStorei(GL_UNPACK_SKIP_PIXELS_EXT, x);
-            glPixelStorei(GL_UNPACK_SKIP_ROWS_EXT, y);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height,
-                            GL_BGRA_EXT, GL_UNSIGNED_BYTE, layers[i].buffer.pixels);
+            const uint32_t stride_pixels = layers[i].buffer.stride / 4;
+            const uint32_t *src = (const uint32_t *)(layers[i].buffer.pixels +
+                                  (size_t)y * (size_t)layers[i].buffer.stride +
+                                  (size_t)x * 4);
+            premultiply_rect(src, stride_pixels, width, height, scratch);
             glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 0);
             glPixelStorei(GL_UNPACK_SKIP_PIXELS_EXT, 0);
             glPixelStorei(GL_UNPACK_SKIP_ROWS_EXT, 0);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height,
+                            GL_BGRA_EXT, GL_UNSIGNED_BYTE, scratch);
         } else {
+            const uint32_t *src = (const uint32_t *)pixels[i];
+            premultiply_rect(src, (uint32_t)width, width, height, scratch);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
-                         GL_BGRA_EXT, GL_UNSIGNED_BYTE, pixels[i]);
+                         GL_BGRA_EXT, GL_UNSIGNED_BYTE, scratch);
         }
     }
     if (!direct_upload) {
@@ -799,6 +1149,7 @@ static int cached_region(DepthGpu *gpu, Display *display, const DepthEffect *eff
     if (upload && gallery_upload(gpu, display, layers, pixels, x, y, width, height) != 0)
         return -1;
     direct_upload = depth_gpu_direct_upload(gpu);
+    set_layer_filter(gpu, GL_NEAREST);
     glBindFramebuffer(GL_FRAMEBUFFER, gpu->cache_framebuffer);
     glViewport(0, 0, gpu->cache_width, gpu->cache_height);
     glEnable(GL_SCISSOR_TEST);
@@ -821,6 +1172,7 @@ static int cached_region(DepthGpu *gpu, Display *display, const DepthEffect *eff
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (glGetError() != GL_NO_ERROR)
         return -1;
+    mark_slots_dirty(gpu, clip_x, clip_y, clip_width, clip_height);
     advance_cache_revision(gpu);
     return 0;
 }
@@ -866,6 +1218,7 @@ static int anim_program_init(DepthGpu *gpu)
     u->fringe = glGetUniformLocation(gpu->anim_program, "u_fringe");
     u->inv_view = glGetUniformLocation(gpu->anim_program, "u_inv_view");
     u->flip_subp = glGetUniformLocation(gpu->anim_program, "u_flip_subp");
+    u->has_back = glGetUniformLocation(gpu->anim_program, "u_has_back");
     glUseProgram(gpu->anim_program);
     glUniform1i(u->layer[0], 0);
     glUniform1i(u->layer[1], 1);
@@ -876,7 +1229,7 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
                                   const DepthLayer *layers,
                                   const DepthAnimRect *first, const DepthAnimRect *second,
                                   int clip_x, int clip_y, int clip_width, int clip_height,
-                                  int bar_top, int bar_bottom)
+                                  int bar_top, int bar_bottom, int has_back)
 {
     const int screen_w = display->mode.hdisplay;
     const int screen_h = display->mode.vdisplay;
@@ -900,6 +1253,7 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
         first = second;
         second = tmp;
     }
+    set_layer_filter(gpu, GL_LINEAR);
     for (i = 0; i < 2; ++i) {
         glActiveTexture(GL_TEXTURE0 + i);
         glBindTexture(GL_TEXTURE_2D, gpu->textures[i]);
@@ -941,6 +1295,7 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
     glUniform1f(gpu->anim_uniforms.fringe, effect->fringe);
     glUniform1i(gpu->anim_uniforms.inv_view, effect->inv_view);
     glUniform1i(gpu->anim_uniforms.flip_subp, effect->flip_subp);
+    glUniform1i(gpu->anim_uniforms.has_back, has_back ? 1 : 0);
     glScissor(clip_x, gpu->cache_height - clip_y - clip_height, clip_width, clip_height);
     draw_vertices();
     glFlush();
@@ -948,6 +1303,57 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (glGetError() != GL_NO_ERROR)
         return -1;
+    mark_slots_dirty(gpu, clip_x, clip_y, clip_width, clip_height);
+    advance_cache_revision(gpu);
+    return 0;
+}
+
+static void clear_cache_band(int cache_height, int x, int y0, int y1, int width,
+                             float r, float g, float b)
+{
+    if (y1 <= y0)
+        return;
+    glScissor(x, cache_height - y1, width, y1 - y0);
+    glClearColor(r, g, b, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+}
+
+int depth_gpu_gallery_anim_clear(DepthGpu *gpu, Display *display,
+                                 int clip_x, int clip_y, int clip_width, int clip_height,
+                                 int bar_top, int bar_bottom)
+{
+    const int screen_w = display->mode.hdisplay;
+    const int screen_h = display->mode.vdisplay;
+    int y0 = clip_y;
+    int y1 = clip_y + clip_height;
+    if (gpu->failed || clip_x < 0 || clip_y < 0 || clip_width <= 0 || clip_height <= 0 ||
+        clip_x + clip_width > screen_w || clip_y + clip_height > screen_h ||
+        !eglMakeCurrent(gpu->display, gpu->surface, gpu->surface, gpu->context) ||
+        gallery_cache_init(gpu, display) != 0)
+        return -1;
+    glBindFramebuffer(GL_FRAMEBUFFER, gpu->cache_framebuffer);
+    glViewport(0, 0, gpu->cache_width, gpu->cache_height);
+    glEnable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
+    if (bar_bottom > bar_top && y1 > bar_top && y0 < bar_bottom) {
+        int ov0 = y0 > bar_top ? y0 : bar_top;
+        int ov1 = y1 < bar_bottom ? y1 : bar_bottom;
+        clear_cache_band(gpu->cache_height, clip_x, y0, ov0, clip_width,
+                         16.0f / 255.0f, 16.0f / 255.0f, 20.0f / 255.0f);
+        clear_cache_band(gpu->cache_height, clip_x, ov0, ov1, clip_width,
+                         232.0f / 255.0f, 232.0f / 255.0f, 232.0f / 255.0f);
+        clear_cache_band(gpu->cache_height, clip_x, ov1, y1, clip_width,
+                         16.0f / 255.0f, 16.0f / 255.0f, 20.0f / 255.0f);
+    } else {
+        clear_cache_band(gpu->cache_height, clip_x, y0, y1, clip_width,
+                         16.0f / 255.0f, 16.0f / 255.0f, 20.0f / 255.0f);
+    }
+    glFlush();
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (glGetError() != GL_NO_ERROR)
+        return -1;
+    mark_slots_dirty(gpu, clip_x, clip_y, clip_width, clip_height);
     advance_cache_revision(gpu);
     return 0;
 }
@@ -987,6 +1393,7 @@ int depth_gpu_gallery_bake_base(DepthGpu *gpu, Display *display, const DepthEffe
     }
     if (!gpu->gallery_base_texture)
         return -1;
+    set_layer_filter(gpu, GL_NEAREST);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gpu->textures[0]);
     glActiveTexture(GL_TEXTURE1);
@@ -1071,6 +1478,7 @@ int depth_gpu_gallery_bake_patch(DepthGpu *gpu, Display *display, const DepthEff
     if (!patch->texture)
         return -1;
     direct_upload = depth_gpu_direct_upload(gpu);
+    set_layer_filter(gpu, GL_NEAREST);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, gpu->textures[0]);
     glActiveTexture(GL_TEXTURE1);
@@ -1140,14 +1548,106 @@ int depth_gpu_gallery_compose(DepthGpu *gpu, Display *display, int selected_cell
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     if (glGetError() != GL_NO_ERROR)
         return -1;
+    mark_slots_dirty_full(gpu);
     advance_cache_revision(gpu);
+    return 0;
+}
+
+static void draw_quad_rect(int dx, int dy, int dw, int dh, int screen_w, int screen_h)
+{
+    float x0 = 2.0f * (float)dx / (float)screen_w - 1.0f;
+    float x1 = 2.0f * (float)(dx + dw) / (float)screen_w - 1.0f;
+    float y0 = 2.0f * (float)dy / (float)screen_h - 1.0f;
+    float y1 = 2.0f * (float)(dy + dh) / (float)screen_h - 1.0f;
+    float vertices[8];
+    vertices[0] = x0;
+    vertices[1] = y0;
+    vertices[2] = x1;
+    vertices[3] = y0;
+    vertices[4] = x0;
+    vertices[5] = y1;
+    vertices[6] = x1;
+    vertices[7] = y1;
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertices);
+    glEnableVertexAttribArray(0);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+static int present_partial(DepthGpu *gpu, Display *display)
+{
+    const int screen_w = display->mode.hdisplay;
+    const int screen_h = display->mode.vdisplay;
+    int slot_idx;
+    ScanoutSlot *entry;
+    int dx = 0;
+    int dy = 0;
+    int dw = 0;
+    int dh = 0;
+    if (display_wait_for_flip(display) != 0 ||
+        !eglMakeCurrent(gpu->display, gpu->surface, gpu->surface, gpu->context))
+        return -1;
+    slot_idx = (gpu->front_slot == 0) ? 1 : 0;
+    entry = &gpu->slots[slot_idx];
+    if (entry->dirty_full) {
+        dw = screen_w;
+        dh = screen_h;
+    } else if (entry->dirty_x1 > entry->dirty_x0 && entry->dirty_y1 > entry->dirty_y0) {
+        dx = entry->dirty_x0;
+        dy = entry->dirty_y0;
+        dw = entry->dirty_x1 - entry->dirty_x0;
+        dh = entry->dirty_y1 - entry->dirty_y0;
+    }
+    if (dw > 0 && dh > 0) {
+        glBindFramebuffer(GL_FRAMEBUFFER, entry->fbo);
+        glViewport(0, 0, screen_w, screen_h);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(dx, dy, dw, dh);
+        glDisable(GL_BLEND);
+        glUseProgram(gpu->blit_flip_program);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, gpu->cache_texture);
+        draw_quad_rect(dx, dy, dw, dh, screen_w, screen_h);
+        glDisable(GL_SCISSOR_TEST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glFinish();
+        if (glGetError() != GL_NO_ERROR)
+            return -1;
+        entry->dirty_full = 0;
+        entry->dirty_x0 = 0;
+        entry->dirty_y0 = 0;
+        entry->dirty_x1 = 0;
+        entry->dirty_y1 = 0;
+    }
+    if (!display->active_framebuffer ||
+        display->active_framebuffer != gpu->current_framebuffer) {
+        if (drmModeSetCrtc(display->fd, display->crtc_id, entry->fb->id, 0, 0,
+                           &display->connector_id, 1, &display->mode) != 0) {
+            fprintf(stderr, "Depth mode set failed: %s\n", strerror(errno));
+            return -1;
+        }
+        gpu->front_slot = slot_idx;
+        gpu->pending_slot = -1;
+    } else {
+        if (drmModePageFlip(display->fd, display->crtc_id, entry->fb->id,
+                            DRM_MODE_PAGE_FLIP_EVENT, display) != 0) {
+            fprintf(stderr, "Depth page flip failed: %s\n", strerror(errno));
+            return -1;
+        }
+        gpu->pending_slot = slot_idx;
+        display->flip_pending = 1;
+    }
+    display->active_framebuffer = entry->fb->id;
+    gpu->current_framebuffer = entry->fb->id;
     return 0;
 }
 
 int depth_gpu_gallery_present(DepthGpu *gpu, Display *display)
 {
-    if (gpu->failed || !gpu->cache_texture ||
-        display_wait_for_flip(display) != 0 ||
+    if (gpu->failed || !gpu->cache_texture)
+        return -1;
+    if (gpu->partial_scanout)
+        return present_partial(gpu, display);
+    if (display_wait_for_flip(display) != 0 ||
         !eglMakeCurrent(gpu->display, gpu->surface, gpu->surface, gpu->context))
         return -1;
     glBindFramebuffer(GL_FRAMEBUFFER, 0);

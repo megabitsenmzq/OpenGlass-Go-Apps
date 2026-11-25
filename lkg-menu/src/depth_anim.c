@@ -45,6 +45,50 @@ void depth_anim_clip_rect(const Display *display, const DepthEffect *effect,
     *ch = ry1 > ry0 ? ry1 - ry0 : 0;
 }
 
+void depth_anim_tight_x(const Display *display, const Buffer *buffer,
+                        int y, int height,
+                        int fallback_x0, int fallback_x1,
+                        int *x0_out, int *x1_out)
+{
+    int width = display ? (int)display->mode.hdisplay : 0;
+    int screen_h = display ? (int)display->mode.vdisplay : 0;
+    int min_x = width;
+    int max_x = 0;
+    int row;
+    if (!display || !buffer || !buffer->pixels || width <= 0 || screen_h <= 0 ||
+        buffer->stride < (uint32_t)width * 4 || y < 0 || height <= 0 || y >= screen_h) {
+        *x0_out = fallback_x0;
+        *x1_out = fallback_x1;
+        return;
+    }
+    if (y + height > screen_h)
+        height = screen_h - y;
+    for (row = 0; row < height; ++row) {
+        const uint32_t *line = (const uint32_t *)(buffer->pixels +
+                               (size_t)(y + row) * (size_t)buffer->stride);
+        int col;
+        for (col = 0; col < min_x; ++col) {
+            if ((line[col] >> 24) != 0u) {
+                min_x = col;
+                break;
+            }
+        }
+        for (col = width - 1; col >= max_x; --col) {
+            if ((line[col] >> 24) != 0u) {
+                max_x = col + 1;
+                break;
+            }
+        }
+    }
+    if (min_x >= max_x) {
+        *x0_out = 0;
+        *x1_out = 0;
+        return;
+    }
+    *x0_out = min_x;
+    *x1_out = max_x;
+}
+
 void depth_anim_set_clips(DepthAnim *anim, const Display *display,
                           const DepthEffect *effect,
                           const DepthAnimRect *a, const DepthAnimRect *b)
@@ -118,7 +162,7 @@ int depth_anim_upload_rect(Display *display, const DepthEffect *effect,
 void depth_anim_start(DepthAnim *anim, const Display *display, const DepthEffect *effect,
                       int old_id, int new_id,
                       const DepthAnimRect *old_rect, const DepthAnimRect *new_rect,
-                      int bar_top, int bar_bottom, uint64_t content_key,
+                      int bar_top, int bar_bottom, int has_back, uint64_t content_key,
                       float old_start, float new_start)
 {
     memset(anim, 0, sizeof(*anim));
@@ -135,6 +179,7 @@ void depth_anim_start(DepthAnim *anim, const Display *display, const DepthEffect
     anim->new_rect = *new_rect;
     anim->bar_top = bar_top;
     anim->bar_bottom = bar_bottom;
+    anim->has_back = has_back ? 1 : 0;
     anim->content_key = content_key;
     depth_anim_set_clips(anim, display, effect, &anim->old_rect, &anim->new_rect);
 }
@@ -176,7 +221,8 @@ int depth_anim_step(DepthAnim *anim, Display *display, const DepthEffect *effect
                                       &anim->new_rect, &anim->old_rect,
                                       anim->clip_x[i], anim->clip_y[i],
                                       anim->clip_w[i], anim->clip_h[i],
-                                      anim->bar_top, anim->bar_bottom) != 0)
+                                      anim->bar_top, anim->bar_bottom,
+                                      anim->has_back) != 0)
             return -1;
     }
     if (depth_gallery_present(display, effect) != 0)

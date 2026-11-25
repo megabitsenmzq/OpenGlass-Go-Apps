@@ -22,6 +22,7 @@ typedef struct {
     int clip_h[2];
     int bar_top;
     int bar_bottom;
+    int has_back;
     uint64_t content_key;
     int frames;
 } DepthAnim;
@@ -31,6 +32,10 @@ int depth_anim_margin(const DepthEffect *effect);
 void depth_anim_clip_rect(const Display *display, const DepthEffect *effect,
                           int x, int y, int width, int height,
                           int *cx, int *cy, int *cw, int *ch);
+void depth_anim_tight_x(const Display *display, const Buffer *buffer,
+                        int y, int height,
+                        int fallback_x0, int fallback_x1,
+                        int *x0_out, int *x1_out);
 void depth_anim_set_clips(DepthAnim *anim, const Display *display,
                           const DepthEffect *effect,
                           const DepthAnimRect *a, const DepthAnimRect *b);
@@ -39,7 +44,7 @@ int depth_anim_upload_rect(Display *display, const DepthEffect *effect,
 void depth_anim_start(DepthAnim *anim, const Display *display, const DepthEffect *effect,
                       int old_id, int new_id,
                       const DepthAnimRect *old_rect, const DepthAnimRect *new_rect,
-                      int bar_top, int bar_bottom, uint64_t content_key,
+                      int bar_top, int bar_bottom, int has_back, uint64_t content_key,
                       float old_start, float new_start);
 int depth_anim_step(DepthAnim *anim, Display *display, const DepthEffect *effect,
                     DepthLayer layers[2], const char *label, int *finished_out);

@@ -716,7 +716,8 @@ int lkg_app_upload_rect(LkgApp *app, int x, int y, int width, int height)
 
 int lkg_app_present_anim(LkgApp *app, const LkgAnimRect *rects, size_t rect_count,
                          const LkgClipRect *clips, size_t clip_count,
-                         int bar_top, int bar_bottom, int present, int commit_cache)
+                         int bar_top, int bar_bottom, int has_back,
+                         int present, int commit_cache)
 {
     LkgAnimPresentPayload payload;
     LkgMsgHeader header;
@@ -733,6 +734,7 @@ int lkg_app_present_anim(LkgApp *app, const LkgAnimRect *rects, size_t rect_coun
     payload.clip_count = (uint32_t)clip_count;
     payload.bar_top = bar_top;
     payload.bar_bottom = bar_bottom;
+    payload.has_back = has_back ? 1 : 0;
     payload.present = present ? 1 : 0;
     payload.commit_cache = commit_cache ? 1 : 0;
     if (send_message(app, LKG_MSG_ANIM_PRESENT,

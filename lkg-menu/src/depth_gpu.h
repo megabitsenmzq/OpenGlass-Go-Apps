@@ -23,7 +23,10 @@ int depth_gpu_gallery_anim_region(DepthGpu *gpu, Display *display, const DepthEf
                                   const DepthLayer *layers,
                                   const DepthAnimRect *first, const DepthAnimRect *second,
                                   int clip_x, int clip_y, int clip_width, int clip_height,
-                                  int bar_top, int bar_bottom);
+                                  int bar_top, int bar_bottom, int has_back);
+int depth_gpu_gallery_anim_clear(DepthGpu *gpu, Display *display,
+                                 int clip_x, int clip_y, int clip_width, int clip_height,
+                                 int bar_top, int bar_bottom);
 int depth_gpu_gallery_bake_base(DepthGpu *gpu, Display *display, const DepthEffect *effect,
                                 const DepthLayer *layers, const uint8_t *const pixels[2],
                                 int band);

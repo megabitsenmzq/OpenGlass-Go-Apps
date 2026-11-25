@@ -265,6 +265,7 @@ typedef struct {
     uint32_t clip_count;
     int32_t bar_top;
     int32_t bar_bottom;
+    int32_t has_back;
     int32_t present;
     int32_t commit_cache;
 } LkgAnimPresentPayload;

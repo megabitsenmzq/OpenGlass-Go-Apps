@@ -227,7 +227,7 @@ static void draw_text_internal(Display *display, Buffer *buffer, Font *font,
         blend_glyph(display, buffer, &face->glyph->bitmap,
                     x + face->glyph->bitmap_left,
                     baseline - face->glyph->bitmap_top, color);
-        x += face->glyph->advance.x >> 6;
+        x += advance;
     }
 }
 

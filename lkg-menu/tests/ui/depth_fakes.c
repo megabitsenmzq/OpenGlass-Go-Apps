@@ -94,7 +94,7 @@ int depth_gallery_anim_region(Display *display, const DepthEffect *effect,
                               const DepthLayer *layers,
                               const DepthAnimRect *first, const DepthAnimRect *second,
                               int clip_x, int clip_y, int clip_width, int clip_height,
-                              int bar_top, int bar_bottom)
+                              int bar_top, int bar_bottom, int has_back)
 {
     (void)display;
     (void)effect;
@@ -106,8 +106,25 @@ int depth_gallery_anim_region(Display *display, const DepthEffect *effect,
     depth_fake.last_clip_height = clip_height;
     depth_fake.last_bar_top = bar_top;
     depth_fake.last_bar_bottom = bar_bottom;
+    depth_fake.last_has_back = has_back;
     depth_fake.last_first_disparity = first ? first->disparity : 0.0f;
     depth_fake.last_second_disparity = second ? second->disparity : 0.0f;
+    return depth_fake.fail_update ? -1 : 0;
+}
+
+int depth_gallery_anim_clear(Display *display, const DepthEffect *effect,
+                             int clip_x, int clip_y, int clip_width, int clip_height,
+                             int bar_top, int bar_bottom)
+{
+    (void)display;
+    (void)effect;
+    ++depth_fake.anim_clear_calls;
+    depth_fake.last_clip_x = clip_x;
+    depth_fake.last_clip_y = clip_y;
+    depth_fake.last_clip_width = clip_x >= 0 ? clip_width : 0;
+    depth_fake.last_clip_height = clip_height;
+    depth_fake.last_bar_top = bar_top;
+    depth_fake.last_bar_bottom = bar_bottom;
     return depth_fake.fail_update ? -1 : 0;
 }
 

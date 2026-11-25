@@ -10,6 +10,7 @@ typedef struct {
     int begin_calls;
     int upload_calls;
     int anim_region_calls;
+    int anim_clear_calls;
     int cached_calls;
     int region_calls;
     int present_calls;
@@ -24,6 +25,7 @@ typedef struct {
     int last_height;
     int last_bar_top;
     int last_bar_bottom;
+    int last_has_back;
     int last_clip_x;
     int last_clip_y;
     int last_clip_width;

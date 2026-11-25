@@ -141,7 +141,7 @@ static void list_anim_cancel(WifiMenu *menu)
                                               &menu->anim.new_rect, NULL,
                                               menu->anim.clip_x[i], menu->anim.clip_y[i],
                                               menu->anim.clip_w[i], menu->anim.clip_h[i],
-                                              menu->anim.bar_top, menu->anim.bar_bottom) != 0) {
+                                              menu->anim.bar_top, menu->anim.bar_bottom, 1) != 0) {
                     menu->anim.active = 0;
                     return;
                 }
@@ -163,6 +163,8 @@ static int list_anim_begin(WifiMenu *menu, WifiPage page, uint64_t content_key, 
     float new_start = menu->depth->back_disparity;
     int old_y;
     int new_y;
+    int bar_top;
+    int bar_bottom;
     DepthAnimRect old_rect;
     DepthAnimRect new_rect;
     if (!menu->depth->stereo || !depth_gallery_direct_upload(display, menu->depth) ||
@@ -190,33 +192,45 @@ static int list_anim_begin(WifiMenu *menu, WifiPage page, uint64_t content_key, 
                                  &cx, &cy, &cw, &ch);
             if (cw > 0 && ch > 0 &&
                 depth_gallery_anim_region(display, menu->depth, menu->layers,
-                                          NULL, NULL, cx, cy, cw, ch, 0, 0) != 0)
+                                          NULL, NULL, cx, cy, cw, ch, 0, 0, 1) != 0)
                 return -1;
         }
         menu->anim.active = 0;
     }
     old_y = list_row_y(menu, page, old_row);
     new_y = list_row_y(menu, page, new_row);
-    old_rect.x0 = 0;
+    bar_top = new_y;
+    bar_bottom = new_y + WIFI_ROW_HEIGHT - 8;
     old_rect.y0 = old_y;
-    old_rect.x1 = width;
     old_rect.y1 = old_y + WIFI_ROW_HEIGHT;
     old_rect.disparity = 0.0f;
-    new_rect.x0 = 0;
     new_rect.y0 = new_y;
-    new_rect.x1 = width;
     new_rect.y1 = new_y + WIFI_ROW_HEIGHT;
     new_rect.disparity = 0.0f;
     draw_list_row_anim(menu, page, old_row, 0);
     draw_list_row_anim(menu, page, new_row, 1);
+    depth_anim_tight_x(display, &menu->layers[0].buffer, old_y, WIFI_ROW_HEIGHT,
+                       0, width, &old_rect.x0, &old_rect.x1);
+    depth_anim_tight_x(display, &menu->layers[0].buffer, new_y, WIFI_ROW_HEIGHT,
+                       0, width, &new_rect.x0, &new_rect.x1);
     if (depth_anim_upload_rect(display, menu->depth, menu->layers,
-                               0, old_y, width, WIFI_ROW_HEIGHT) != 0 ||
+                               old_rect.x0, old_rect.y0,
+                               old_rect.x1 - old_rect.x0,
+                               old_rect.y1 - old_rect.y0) != 0 ||
         depth_anim_upload_rect(display, menu->depth, menu->layers,
-                               0, new_y, width, WIFI_ROW_HEIGHT) != 0)
+                               new_rect.x0, new_rect.y0,
+                               new_rect.x1 - new_rect.x0,
+                               new_rect.y1 - new_rect.y0) != 0 ||
+        depth_gallery_anim_clear(display, menu->depth,
+                                 0, old_y, width, WIFI_ROW_HEIGHT,
+                                 bar_top, bar_bottom) != 0 ||
+        depth_gallery_anim_clear(display, menu->depth,
+                                 0, new_y, width, WIFI_ROW_HEIGHT,
+                                 bar_top, bar_bottom) != 0)
         return -1;
     depth_anim_start(&menu->anim, display, menu->depth, old_row, new_row,
                      &old_rect, &new_rect,
-                     new_y, new_y + WIFI_ROW_HEIGHT - 8,
+                     bar_top, bar_bottom, 0,
                      content_key, old_start, new_start);
     menu->anim_page = page;
     if (wifi_ui_anim_step(menu) != 0)
@@ -400,7 +414,7 @@ void wifi_ui_password_anim_cancel(Display *display, Font *font, const DepthEffec
                                               &anim->new_rect, NULL,
                                               anim->clip_x[i], anim->clip_y[i],
                                               anim->clip_w[i], anim->clip_h[i],
-                                              0, 0) != 0) {
+                                              0, 0, 1) != 0) {
                     anim->active = 0;
                     return;
                 }
@@ -442,7 +456,7 @@ int wifi_ui_password_anim_begin(Display *display, Font *font, const DepthEffect 
                                  &cx, &cy, &cw, &ch);
             if (cw > 0 && ch > 0 &&
                 depth_gallery_anim_region(display, depth, layers, NULL, NULL,
-                                          cx, cy, cw, ch, 0, 0) != 0)
+                                          cx, cy, cw, ch, 0, 0, 1) != 0)
                 return -1;
         }
         anim->active = 0;
@@ -459,7 +473,7 @@ int wifi_ui_password_anim_begin(Display *display, Font *font, const DepthEffect 
                                new_rect.y1 - new_rect.y0) != 0)
         return -1;
     depth_anim_start(anim, display, depth, old_id, new_id, &old_rect, &new_rect,
-                     0, 0, 0, old_start, new_start);
+                     0, 0, 1, 0, old_start, new_start);
     if (wifi_ui_password_anim_step(display, font, depth, layers,
                                    cache_state, anim, layout) != 0)
         return -1;

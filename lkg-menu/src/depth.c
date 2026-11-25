@@ -250,13 +250,24 @@ int depth_gallery_anim_region(Display *display, const DepthEffect *effect,
                               const DepthLayer *layers,
                               const DepthAnimRect *first, const DepthAnimRect *second,
                               int clip_x, int clip_y, int clip_width, int clip_height,
-                              int bar_top, int bar_bottom)
+                              int bar_top, int bar_bottom, int has_back)
 {
     return effect->gpu ? depth_gpu_gallery_anim_region(effect->gpu, display, effect, layers,
                                                        first, second,
                                                        clip_x, clip_y, clip_width, clip_height,
-                                                       bar_top, bar_bottom)
+                                                       bar_top, bar_bottom, has_back)
                        : -1;
+}
+
+int depth_gallery_anim_clear(Display *display, const DepthEffect *effect,
+                             int clip_x, int clip_y, int clip_width, int clip_height,
+                             int bar_top, int bar_bottom)
+{
+    return (effect && effect->gpu)
+               ? depth_gpu_gallery_anim_clear(effect->gpu, display,
+                                              clip_x, clip_y, clip_width, clip_height,
+                                              bar_top, bar_bottom)
+               : -1;
 }
 
 int depth_gallery_bake_base(Display *display, const DepthEffect *effect,

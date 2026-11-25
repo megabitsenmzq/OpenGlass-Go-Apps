@@ -674,16 +674,39 @@ static int test_menu_and_wifi_animations(Display *display, Font *font, DepthLaye
 
     depth_fake_reset();
     depth_anim_start(&anim, display, &depth, 0, 1, &rect_a, &rect_b,
-                     650, 792, 99, depth.front_disparity, depth.back_disparity);
+                     650, 792, 0, 99, depth.front_disparity, depth.back_disparity);
     TEST_ASSERT(depth_anim_step(&anim, display, &depth, layers, NULL, &finished) == 0);
     TEST_ASSERT(!finished);
     TEST_ASSERT(depth_fake.anim_region_calls == 1 && depth_fake.present_calls == 1);
     TEST_ASSERT(depth_fake.last_bar_top == 650 && depth_fake.last_bar_bottom == 792);
+    TEST_ASSERT(depth_fake.last_has_back == 0);
     anim.started -= 1.0;
     TEST_ASSERT(depth_anim_step(&anim, display, &depth, layers, NULL, &finished) == 0);
     TEST_ASSERT(finished);
     TEST_ASSERT(anim.cur_old_disparity == depth.back_disparity);
     TEST_ASSERT(anim.cur_new_disparity == depth.front_disparity);
+
+    {
+        int x0 = 0;
+        int x1 = 0;
+        int reg_x0 = 0;
+        int reg_x1 = 0;
+        int bold_x0 = 0;
+        int bold_x1 = 0;
+        memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
+        depth_anim_tight_x(display, &layers[0].buffer, 500, 150, 0, 1440, &x0, &x1);
+        TEST_ASSERT(x0 == 0 && x1 == 0);
+        __real_draw_text(display, &layers[0].buffer, font,
+                         "Gallery Network Settings", 144, 590, 0xffd8d8d8);
+        depth_anim_tight_x(display, &layers[0].buffer, 500, 150, 0, 1440, &reg_x0, &reg_x1);
+        TEST_ASSERT(reg_x0 >= 140 && reg_x1 > reg_x0 && reg_x1 < 1200);
+        memset(layers[0].buffer.pixels, 0, layers[0].buffer.size);
+        __real_draw_text_bold(display, &layers[0].buffer, font,
+                              "Gallery Network Settings", 144, 590, 0xff101014);
+        depth_anim_tight_x(display, &layers[0].buffer, 500, 150, 0, 1440, &bold_x0, &bold_x1);
+        TEST_ASSERT(bold_x0 >= reg_x0 - 2 && bold_x0 <= reg_x0 + 2);
+        TEST_ASSERT(bold_x1 >= reg_x1 - 2 && bold_x1 <= reg_x1 + 4);
+    }
     return 0;
 }
 

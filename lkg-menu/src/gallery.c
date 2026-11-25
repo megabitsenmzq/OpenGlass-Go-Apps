@@ -750,7 +750,7 @@ static int gallery_anim_step(Display *display, Font *font, Gallery *gallery)
         if (depth_gallery_anim_region(display, gallery->depth, layers,
                                       &anim->new_rect, &anim->old_rect,
                                       anim->clip_x[i], anim->clip_y[i],
-                                      anim->clip_w[i], anim->clip_h[i], 0, 0) != 0)
+                                      anim->clip_w[i], anim->clip_h[i], 0, 0, 1) != 0)
             return -1;
     }
     if (depth_gallery_present(display, gallery->depth) != 0)
@@ -813,7 +813,7 @@ static int gallery_anim_begin(Display *display, Font *font, Gallery *gallery,
             gallery->cache.cells[prev.old_cell].selected = 0;
             gallery_cell_patch_rect(display, prev.old_cell, &px, &py, &pw, &ph, &sx, &sw);
             if (depth_gallery_anim_region(display, gallery->depth, layers,
-                                          NULL, NULL, px, py, pw, ph, 0, 0) != 0)
+                                          NULL, NULL, px, py, pw, ph, 0, 0, 1) != 0)
                 return -1;
         }
         gallery->anim.active = 0;

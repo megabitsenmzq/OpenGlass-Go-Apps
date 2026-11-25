@@ -545,7 +545,7 @@ static void menu_anim_cancel(Display *display, Font *font, const DepthEffect *de
                                               &anim->new_rect, NULL,
                                               anim->clip_x[i], anim->clip_y[i],
                                               anim->clip_w[i], anim->clip_h[i],
-                                              anim->bar_top, anim->bar_bottom) != 0) {
+                                              anim->bar_top, anim->bar_bottom, 1) != 0) {
                     anim->active = 0;
                     return;
                 }
@@ -579,9 +579,12 @@ static int menu_anim_begin(Display *display, Font *font, const DepthEffect *dept
                            const SystemInfo *info)
 {
     uint64_t key = menu_content_key(page, has_apps, menu_3d);
+    const int screen_w = (int)display->mode.hdisplay;
     const int row_height = (int)display->mode.vdisplay / 17;
     float old_start = depth->front_disparity;
     float new_start = depth->back_disparity;
+    int bar_top;
+    int bar_bottom;
     DepthAnimRect old_rect;
     DepthAnimRect new_rect;
     if (page == PAGE_FILE_MANAGER || !depth->stereo ||
@@ -608,15 +611,21 @@ static int menu_anim_begin(Display *display, Font *font, const DepthEffect *dept
                                  &cx, &cy, &cw, &ch);
             if (cw > 0 && ch > 0 &&
                 depth_gallery_anim_region(display, depth, layers, NULL, NULL,
-                                          cx, cy, cw, ch, 0, 0) != 0)
+                                          cx, cy, cw, ch, 0, 0, 1) != 0)
                 return -1;
         }
         anim->active = 0;
     }
     menu_row_bounds(display, page, has_apps, old_row, &old_rect);
     menu_row_bounds(display, page, has_apps, new_row, &new_rect);
+    bar_top = new_rect.y0;
+    bar_bottom = new_rect.y0 + row_height - 8;
     menu_view_draw_row_anim(display, font, depth, layers, page, has_apps, old_row, 0, info);
     menu_view_draw_row_anim(display, font, depth, layers, page, has_apps, new_row, 1, info);
+    depth_anim_tight_x(display, &layers[0].buffer, old_rect.y0, old_rect.y1 - old_rect.y0,
+                       old_rect.x0, old_rect.x1, &old_rect.x0, &old_rect.x1);
+    depth_anim_tight_x(display, &layers[0].buffer, new_rect.y0, new_rect.y1 - new_rect.y0,
+                       new_rect.x0, new_rect.x1, &new_rect.x0, &new_rect.x1);
     if (depth_anim_upload_rect(display, depth, layers,
                                old_rect.x0, old_rect.y0,
                                old_rect.x1 - old_rect.x0,
@@ -624,11 +633,15 @@ static int menu_anim_begin(Display *display, Font *font, const DepthEffect *dept
         depth_anim_upload_rect(display, depth, layers,
                                new_rect.x0, new_rect.y0,
                                new_rect.x1 - new_rect.x0,
-                               new_rect.y1 - new_rect.y0) != 0)
+                               new_rect.y1 - new_rect.y0) != 0 ||
+        depth_gallery_anim_clear(display, depth, 0, old_rect.y0, screen_w,
+                                 old_rect.y1 - old_rect.y0, bar_top, bar_bottom) != 0 ||
+        depth_gallery_anim_clear(display, depth, 0, new_rect.y0, screen_w,
+                                 new_rect.y1 - new_rect.y0, bar_top, bar_bottom) != 0)
         return -1;
     depth_anim_start(anim, display, depth, old_row, new_row,
                      &old_rect, &new_rect,
-                     new_rect.y0, new_rect.y0 + row_height - 8,
+                     bar_top, bar_bottom, 0,
                      key, old_start, new_start);
     if (menu_anim_step(display, font, depth, layers, cache_state,
                        anim, page, has_apps, new_row, info) != 0)
